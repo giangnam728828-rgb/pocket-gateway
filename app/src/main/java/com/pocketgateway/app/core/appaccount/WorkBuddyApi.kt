@@ -15,9 +15,36 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
+ * 账号可用的一个模型（含倍率与能力）。
+ *
+ * 字段来源 workbuddy2api 的 dynModelEntry：
+ *  - credits：倍率字符串，"0.00" 表示免费，"" 表示上游未提供
+ *  - maxInputTokens / maxOutputTokens：上下文与输出上限
+ *  - supportsImages：可看图
+ */
+data class ModelRow(
+    val id: String,
+    val displayName: String = "",
+    val credits: String = "",
+    val contextLength: Long = 0,
+    val maxOutput: Long = 0,
+    val supportsImages: Boolean = false,
+) {
+    /** 倍率展示：免费 / x0.79 / — */
+    val creditLabel: String
+        get() = when {
+            credits.isBlank() -> "—"
+            credits.toDoubleOrNull() == 0.0 -> "免费"
+            else -> "x$credits"
+        }
+
+    val isFree: Boolean get() = credits.toDoubleOrNull() == 0.0
+}
+
+/**
  * WorkBuddy / CodeBuddy 上游接口封装。
  *
- * 端点依据开源实现 workbuddy2api 的 internal/upstream/client.go：
+ * 端点依据开源实现 workbuddy2api（internal/upstream/client.go、scripts/task_runner.py）：
  *
  * | 用途 | 国内 (copilot.tencent.com) | 国际 (www.workbuddy.ai) |
  * |---|---|---|
@@ -27,39 +54,30 @@ import java.net.URL
  * | 签到 | /billing/meter/daily-checkin | /v2/billing/meter/daily-checkin |
  * | 资源 | /billing/meter/get-user-resource | /v2/billing/meter/get-user-resource |
  * | 礼包 | /billing/meter/claim-gift | /v2/billing/meter/claim-gift |
- * | 补签 | /billing/meter/claim-compensation | /v2/billing/meter/claim-compensation |
+ * | 任务列表 | /activity/growth/tasks | /v2/activity/growth/tasks |
+ * | 接取任务 | /activity/growth/tasks/accept | 同 |
+ * | 领奖 | /activity/growth/tasks/{code}/claim | 同 |
+ * | 能量 | /v2/activity/growth/energy | 同 |
  */
 object WorkBuddyApi {
 
-    /** 判断是否国际版（按 baseUrl 域名）。 */
     private fun isGlobal(ch: Channel): Boolean =
         ch.baseUrl.contains("workbuddy.ai", ignoreCase = true)
 
-    /** 业务路径前缀：国际版统一加 /v2。 */
     private fun prefix(ch: Channel): String = if (isGlobal(ch)) "/v2" else ""
 
-    /** 模型端点（按版本区分）。 */
     private fun modelsPath(ch: Channel): String =
         if (isGlobal(ch)) "/v2/enterprises/personal/models"
         else "/console/enterprises/personal/models"
 
-    /** 资源端点。 */
     private fun resourcePath(ch: Channel): String = prefix(ch) + "/billing/meter/get-user-resource"
-
-    /** 签到端点。 */
     private fun checkinPath(ch: Channel): String = prefix(ch) + "/billing/meter/daily-checkin"
-
-    /** 礼包端点。 */
     private fun claimGiftPath(ch: Channel): String = prefix(ch) + "/billing/meter/claim-gift"
+    private fun tasksPath(ch: Channel): String = prefix(ch) + "/activity/growth/tasks"
 
     // ---------- 底层请求 ----------
 
-    private fun request(
-        ch: Channel,
-        urlStr: String,
-        method: String,
-        body: String? = null,
-    ): Pair<Int, String> {
+    private fun request(ch: Channel, urlStr: String, method: String, body: String? = null): Pair<Int, String> {
         val adapter = AdapterRegistry.get(ch)
         val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
             requestMethod = method
@@ -87,7 +105,6 @@ object WorkBuddyApi {
         }
     }
 
-    /** 解析业务信封 {code,msg,data}，code!=0 视为失败。 */
     private fun unwrap(text: String): JsonElement? {
         val root = runCatching { AppJson.parseToJsonElement(text) }.getOrNull() ?: return null
         if (root is JsonObject) {
@@ -98,21 +115,28 @@ object WorkBuddyApi {
         return root
     }
 
-    // ---------- 模型列表 ----------
+    // ---------- 模型（仅账号可用 + 带倍率） ----------
 
     /**
-     * 获取模型列表。依次尝试：
-     *  1. 企业模型端点（CN /console/...，Global /v2/...）
-     *  2. /v3/config
-     * 返回去重后的模型名；失败返回 Result.failure。
+     * 获取**当前账号可用**的模型列表。
+     *
+     * 过滤规则（对齐 workbuddy2api 的 fetchEnterpriseModels）：
+     *  1. 只保留 `agents[name=="cli"].models` 里的模型（这才是账号实际可调的）
+     *  2. 剔除 `disabled == true`
+     *  3. 剔除非对话模型：id 以 nes- / completion- / codewise- 开头，
+     *     或 maxOutputTokens <= 256，或 tags 含 text-to-image
      */
-    suspend fun fetchModels(ch: Channel): Result<List<String>> = withContext(Dispatchers.IO) {
+    suspend fun fetchModels(ch: Channel): Result<List<ModelRow>> = withContext(Dispatchers.IO) {
         val base = ch.baseUrl.trim().trimEnd('/')
         if (base.isBlank()) {
             return@withContext Result.failure(IllegalStateException("Base URL 为空"))
         }
+
+        // 主路：企业模型端点（含 credits 倍率）；备用：/v3/config
+        val attempts = listOf(base + modelsPath(ch), base + "/v3/config")
         var lastErr = "未知错误"
-        for (url in listOf(base + modelsPath(ch), base + "/v3/config")) {
+
+        for (url in attempts) {
             val (code, text) = request(ch, url, "GET")
             if (code !in 200..299) {
                 lastErr = "HTTP $code：${text.take(160)}"
@@ -123,71 +147,91 @@ object WorkBuddyApi {
                 lastErr = "业务码非 0：${text.take(160)}"
                 continue
             }
-            val models = parseModelNames(data)
-            if (models.isNotEmpty()) {
-                return@withContext Result.success(models)
-            }
-            lastErr = "响应中无模型：${text.take(160)}"
+            val rows = parseUsableModels(data)
+            if (rows.isNotEmpty()) return@withContext Result.success(rows)
+            lastErr = "未解析到可用模型：${text.take(160)}"
         }
         Result.failure(IllegalStateException(lastErr))
     }
 
-    /** 从模型响应中解析模型名（兼容 agents[].models 与 models[]）。 */
-    private fun parseModelNames(root: JsonElement): List<String> {
-        val out = LinkedHashSet<String>()
+    /**
+     * 从模型响应中解析「账号可用」模型（含倍率）。
+     * 若无 agents 信息（v3/config 形态），则退化为全量 models 过滤非对话项。
+     */
+    fun parseUsableModels(root: JsonElement): List<ModelRow> {
         if (root !is JsonObject) return emptyList()
 
-        // agents: [{name:"cli", models:["glm-5.2", ...]}]
-        (root["agents"] as? JsonArray)?.forEach { agent ->
-            (agent as? JsonObject)?.let { a ->
-                (a["models"] as? JsonArray)?.forEach { m ->
-                    when (m) {
-                        is JsonPrimitive -> if (m.content.isNotBlank()) out.add(m.content)
-                        is JsonObject -> (m["id"] as? JsonPrimitive)?.content?.let { if (it.isNotBlank()) out.add(it) }
-                        else -> {}
+        // 1. CLI 通道白名单
+        val cliWhitelist: Set<String> = run {
+            val set = LinkedHashSet<String>()
+            (root["agents"] as? JsonArray)?.forEach { a ->
+                val obj = a as? JsonObject ?: return@forEach
+                val name = (obj["name"] as? JsonPrimitive)?.content ?: return@forEach
+                if (name == "cli") {
+                    (obj["models"] as? JsonArray)?.forEach { m ->
+                        when (m) {
+                            is JsonPrimitive -> set.add(m.content)
+                            is JsonObject -> (m["id"] as? JsonPrimitive)?.content?.let { set.add(it) }
+                            else -> {}
+                        }
                     }
                 }
             }
+            set
         }
-        // models: [{id:"glm-5.2", name:..., disabled:false}]
+
+        // 2. 全量模型明细
+        val models = mutableListOf<ModelRow>()
         (root["models"] as? JsonArray)?.forEach { m ->
-            if (m is JsonObject) {
-                val disabled = (m["disabled"] as? JsonPrimitive)?.content?.toBooleanStrictOrNull() ?: false
-                if (disabled) return@forEach
-                val id = (m["id"] as? JsonPrimitive)?.content
-                    ?: (m["name"] as? JsonPrimitive)?.content
-                if (!id.isNullOrBlank()) out.add(id)
-            } else if (m is JsonPrimitive && m.content.isNotBlank()) {
-                out.add(m.content)
-            }
+            val o = m as? JsonObject ?: return@forEach
+            val id = (o["id"] as? JsonPrimitive)?.content
+                ?: (o["name"] as? JsonPrimitive)?.content
+                ?: return@forEach
+            if (id.isBlank()) return@forEach
+
+            val disabled = (o["disabled"] as? JsonPrimitive)?.content?.toBooleanStrictOrNull() ?: false
+            if (disabled) return@forEach
+
+            val maxOut = (o["maxOutputTokens"] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0
+            val tags = (o["tags"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.content } ?: emptyList()
+
+            // 非对话模型剔除
+            if (isNonChat(id, maxOut, tags)) return@forEach
+
+            models.add(
+                ModelRow(
+                    id = id,
+                    displayName = (o["name"] as? JsonPrimitive)?.content ?: id,
+                    credits = (o["credits"] as? JsonPrimitive)?.content ?: "",
+                    contextLength = (o["maxInputTokens"] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0,
+                    maxOutput = maxOut,
+                    supportsImages = (o["supportsImages"] as? JsonPrimitive)?.content?.toBooleanStrictOrNull() ?: false,
+                )
+            )
         }
-        // 兜底：data/items/list
-        for (k in listOf("data", "items", "list", "modelList")) {
-            val v = root[k] ?: continue
-            when (v) {
-                is JsonArray -> v.forEach { it ->
-                    when (it) {
-                        is JsonPrimitive -> if (it.content.isNotBlank()) out.add(it.content)
-                        is JsonObject -> ((it["id"] ?: it["name"] ?: it["model"]) as? JsonPrimitive)
-                            ?.content?.let { s -> if (s.isNotBlank()) out.add(s) }
-                        else -> {}
-                    }
-                }
-                is JsonObject -> v.keys.forEach { out.add(it) }
-                else -> {}
-            }
+
+        if (models.isEmpty()) return emptyList()
+
+        // 3. 有 CLI 白名单则按白名单过滤（这才是账号真正可用的）
+        return if (cliWhitelist.isNotEmpty()) {
+            models.filter { it.id in cliWhitelist }
+        } else {
+            models
         }
-        return out.toList()
     }
 
-    // ---------- 签到 / 积分 ----------
+    /** 非对话模型判定（对齐 workbuddy2api 的 nonChatModel）。 */
+    private fun isNonChat(id: String, maxOutput: Long, tags: List<String>): Boolean {
+        val lower = id.lowercase()
+        if (lower.startsWith("nes-") || lower.startsWith("completion-") || lower.startsWith("codewise-")) return true
+        if (maxOutput in 1..256) return true
+        if (tags.any { it.equals("text-to-image", ignoreCase = true) }) return true
+        return false
+    }
 
-    /** 账户资源（积分等信息）。 */
-    data class Resource(
-        val credits: Long? = null,
-        val totalCredits: Long? = null,
-        val nickname: String? = null,
-    )
+    // ---------- 积分 / 签到 ----------
+
+    data class Resource(val credits: Long? = null, val nickname: String? = null)
 
     suspend fun fetchResource(ch: Channel): Resource? = withContext(Dispatchers.IO) {
         val base = ch.baseUrl.trim().trimEnd('/')
@@ -199,32 +243,87 @@ object WorkBuddyApi {
         }
         Resource(
             credits = num("credits", "credit", "balance", "remainCredits", "availableCredits"),
-            totalCredits = num("totalCredits", "total", "total_credits"),
-            nickname = (data["nickname"] as? JsonPrimitive)?.content
-                ?: (data["name"] as? JsonPrimitive)?.content,
+            nickname = (data["nickname"] as? JsonPrimitive)?.content,
         )
     }
 
-    /** 一键签到。返回是否成功及提示。 */
     suspend fun dailyCheckin(ch: Channel): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         val base = ch.baseUrl.trim().trimEnd('/')
         val (code, text) = request(ch, base + checkinPath(ch), "POST", "{}")
-        if (code !in 200..299) return@withContext false to "HTTP $code：${text.take(160)}"
-        val data = unwrap(text)
-        if (data == null) return@withContext false to "签到失败：${text.take(160)}"
-        val reward = runCatching {
-            val o = data as? JsonObject
-            (o?.get("credits") ?: o?.get("reward") ?: o?.get("amount"))?.toString()
-        }.getOrNull()
-        true to ("签到成功" + if (!reward.isNullOrBlank() && reward != "null") "，+$reward 积分" else "")
+        if (code !in 200..299) return@withContext false to "HTTP $code：${text.take(120)}"
+        if (unwrap(text) == null) return@withContext false to "签到失败：${text.take(120)}"
+        true to "签到成功"
     }
 
-    /** 领取礼包（claim-gift）。 */
     suspend fun claimGift(ch: Channel): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         val base = ch.baseUrl.trim().trimEnd('/')
         val (code, text) = request(ch, base + claimGiftPath(ch), "POST", "{}")
-        if (code !in 200..299) return@withContext false to "HTTP $code：${text.take(160)}"
-        if (unwrap(text) == null) return@withContext false to "领取失败：${text.take(160)}"
+        if (code !in 200..299) return@withContext false to "HTTP $code：${text.take(120)}"
+        if (unwrap(text) == null) return@withContext false to "领取失败：${text.take(120)}"
         true to "礼包已领取"
+    }
+
+    // ---------- 任务（活动积分） ----------
+
+    data class GrowthTask(
+        val code: String,
+        val name: String,
+        val status: String = "",
+        val claimable: Boolean = false,
+        val reward: String = "",
+    )
+
+    /** 拉取成长任务列表。 */
+    suspend fun fetchTasks(ch: Channel): List<GrowthTask> = withContext(Dispatchers.IO) {
+        val base = ch.baseUrl.trim().trimEnd('/')
+        val (code, text) = request(ch, base + tasksPath(ch), "GET")
+        if (code !in 200..299) return@withContext emptyList()
+        val data = unwrap(text) ?: return@withContext emptyList()
+        var arr: JsonArray? = null
+        if (data is JsonArray) {
+            arr = data
+        } else if (data is JsonObject) {
+            arr = (data["tasks"] as? JsonArray) ?: (data["list"] as? JsonArray)
+        }
+        val list = arr ?: return@withContext emptyList()
+        list.mapNotNull { e ->
+            val o = e as? JsonObject ?: return@mapNotNull null
+            val tc = (o["task_code"] as? JsonPrimitive)?.content ?: return@mapNotNull null
+            val name = (o["name"] as? JsonPrimitive)?.content
+                ?: (o["title"] as? JsonPrimitive)?.content ?: tc
+            val status = (o["status"] as? JsonPrimitive)?.content ?: ""
+            val claimed = (o["claimed"] as? JsonPrimitive)?.content?.toBooleanStrictOrNull() ?: false
+            val finished = (o["finished"] as? JsonPrimitive)?.content?.toBooleanStrictOrNull()
+                ?: (o["completed"] as? JsonPrimitive)?.content?.toBooleanStrictOrNull()
+                ?: false
+            val reward = (o["reward"] as? JsonPrimitive)?.content
+                ?: (o["credits"] as? JsonPrimitive)?.content ?: ""
+            GrowthTask(
+                code = tc,
+                name = name,
+                status = status,
+                claimable = !claimed && (finished || status == "finished" || status == "completed"),
+                reward = reward,
+            )
+        }
+    }
+
+    /** 一键领取所有可领任务奖励。返回（成功数，失败数，说明）。 */
+    suspend fun claimAllTasks(ch: Channel): Triple<Int, Int, String> = withContext(Dispatchers.IO) {
+        val tasks = fetchTasks(ch)
+        if (tasks.isEmpty()) return@withContext Triple(0, 0, "没有可领取的任务")
+
+        val base = ch.baseUrl.trim().trimEnd('/')
+        var ok = 0
+        var fail = 0
+        for (t in tasks.filter { it.claimable }) {
+            val (code, _) = request(ch, "$base/activity/growth/tasks/${t.code}/claim", "POST", null)
+            if (code in 200..299) ok++ else fail++
+        }
+        if (ok == 0 && fail == 0) {
+            Triple(0, 0, "没有可领取的任务")
+        } else {
+            Triple(ok, fail, "领取成功 $ok 个" + if (fail > 0) "，失败 $fail 个" else "")
+        }
     }
 }

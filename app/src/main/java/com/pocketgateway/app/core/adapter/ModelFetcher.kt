@@ -27,7 +27,8 @@ object ModelFetcher {
     suspend fun fetch(channel: Channel): Result<List<String>> = withContext(Dispatchers.IO) {
         // APP 直连类型走专用接口（真实端点与通用 OpenAI 不同）
         if (channel.type == com.pocketgateway.app.core.model.ProviderType.APP_NATIVE) {
-            return@withContext com.pocketgateway.app.core.appaccount.WorkBuddyApi.fetchModels(channel)
+            val r = com.pocketgateway.app.core.appaccount.WorkBuddyApi.fetchModels(channel)
+            return@withContext r.map { rows -> rows.map { it.id } }
         }
         runCatching {
             val adapter = AdapterRegistry.get(channel)

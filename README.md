@@ -125,12 +125,23 @@ App 底部导航栏有独立的 **「APP 账号」** 页面，用**设备授权�
 
 > 注意：模型端点**不是** `/v1/models`（会 404 Route Not Found）。网关已按上表正确调用。
 
+### 模型列表：只显示账号可用模型 + 倍率
+
+对齐 workbuddy2api 的 `fetchEnterpriseModels` 过滤规则：
+
+1. **只保留 `agents[name=="cli"].models`** —— 这是账号实际可调的通道，不是全量目录（全量有 30~50 个，实际可用通常十几个）
+2. 剔除 `disabled == true`
+3. 剔除非对话模型：id 以 `nes-` / `completion-` / `codewise-` 开头，或 `maxOutputTokens ≤ 256`，或 tags 含 `text-to-image`
+
+界面按行显示：`模型名  x0.79`，**免费模型显示「免费」**（credits = 0.00），上游未给倍率显示 `—`。
+
 ### 一键签到与积分
 
 「已接入」卡片内提供：
 - **积分**：实时显示当前积分
 - **一键签到**：调用 `daily-checkin`，完成后自动刷新积分
 - **领礼包**：调用 `claim-gift`
+- **一键领任务**：拉 `/activity/growth/tasks`，对所有可领任务逐个 claim
 - **刷新积分**：重新拉取资源
 
 ### 关于 11128「渠道校验失败」

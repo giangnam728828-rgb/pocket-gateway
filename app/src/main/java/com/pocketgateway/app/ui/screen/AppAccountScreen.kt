@@ -39,6 +39,7 @@ import com.pocketgateway.app.core.appaccount.AppAccounts
 import com.pocketgateway.app.core.appaccount.DeviceAuthClient
 import com.pocketgateway.app.core.appaccount.LoginSession
 import com.pocketgateway.app.core.adapter.ModelFetcher
+import com.pocketgateway.app.core.appaccount.ModelRow
 import com.pocketgateway.app.core.appaccount.WorkBuddyApi
 import com.pocketgateway.app.core.appaccount.buildAppChannel
 import com.pocketgateway.app.core.model.Channel
@@ -344,6 +345,7 @@ private fun AccessInfoCard(
     var fetching by remember { mutableStateOf(false) }
     var signing by remember { mutableStateOf(false) }
     var credits by remember { mutableStateOf<Long?>(null) }
+    var modelRows by remember { mutableStateOf<List<ModelRow>>(emptyList()) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
     var currentToken by remember(accessToken) { mutableStateOf(accessToken) }
 
@@ -401,18 +403,42 @@ private fun AccessInfoCard(
                 }
             }
 
-            // 模型列表：支持自动从上游获取
+            // 模型列表：只显示账号可用模型，带倍率
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
-                    "模型（${channel.models.size}）",
+                    "可用模型（${if (modelRows.isNotEmpty()) modelRows.size else channel.models.size}）",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Text(
-                    channel.models.joinToString(", ").ifBlank { "（空）" },
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace,
-                )
+                if (modelRows.isNotEmpty()) {
+                    modelRows.forEach { m ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                m.id,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                m.creditLabel,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (m.isFree) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                } else {
+                    Text(
+                        channel.models.joinToString(", ").ifBlank { "（点下方按钮获取）" },
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(
                         enabled = !fetching,
@@ -421,16 +447,19 @@ private fun AccessInfoCard(
                             scope.launch {
                                 val r = ModelFetcher.fetch(channel)
                                 fetching = false
-                                r.onSuccess { models ->
-                                    if (models.isEmpty()) {
-                                        onMessage("上游未返回模型")
+                                val rich = WorkBuddyApi.fetchModels(channel)
+                                rich.onSuccess { rows ->
+                                    if (rows.isEmpty()) {
+                                        onMessage("上游未返回可用模型")
                                     } else {
-                                        onModelsUpdated(models)
-                                        onMessage("已获取 ${models.size} 个模型")
+                                        modelRows = rows
+                                        onModelsUpdated(rows.map { it.id })
+                                        onMessage("已获取 ${rows.size} 个可用模型")
                                     }
                                 }.onFailure { e ->
                                     onMessage("获取失败：${e.message}")
                                 }
+                                fetching = false
                             }
                         },
                     ) { Text(if (fetching) "获取中…" else "自动获取模型") }
@@ -483,6 +512,16 @@ private fun AccessInfoCard(
                             WorkBuddyApi.fetchResource(channel)?.let { credits = it.credits }
                         }
                     }) { Text("领礼包") }
+
+                    OutlinedButton(enabled = !signing, onClick = {
+                        signing = true
+                        scope.launch {
+                            val (ok, fail, msg) = WorkBuddyApi.claimAllTasks(channel)
+                            signing = false
+                            onMessage(msg)
+                            WorkBuddyApi.fetchResource(channel)?.let { credits = it.credits }
+                        }
+                    }) { Text("一键领任务") }
 
                     OutlinedButton(onClick = {
                         scope.launch {
