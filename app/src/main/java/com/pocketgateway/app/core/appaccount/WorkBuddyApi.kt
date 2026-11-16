@@ -31,14 +31,17 @@ data class ModelRow(
     val supportsImages: Boolean = false,
 ) {
     /** 倍率展示：免费 / x0.79 / — */
+    /** 倍率展示：免费 / x0.79 / —（上游原文可能已带 x 前缀）。 */
     val creditLabel: String
-        get() = when {
-            credits.isBlank() -> "—"
-            credits.toDoubleOrNull() == 0.0 -> "免费"
-            else -> "x$credits"
+        get() {
+            val raw = credits.trim().removePrefix("x").removePrefix("X")
+            if (raw.isBlank()) return "—"
+            val v = raw.toDoubleOrNull() ?: return if (credits.isBlank()) "—" else credits
+            return if (v == 0.0) "免费" else "x$raw"
         }
 
-    val isFree: Boolean get() = credits.toDoubleOrNull() == 0.0
+    val isFree: Boolean
+        get() = credits.trim().removePrefix("x").removePrefix("X").toDoubleOrNull() == 0.0
 }
 
 /**
@@ -64,16 +67,23 @@ object WorkBuddyApi {
     private fun isGlobal(ch: Channel): Boolean =
         ch.baseUrl.contains("workbuddy.ai", ignoreCase = true)
 
-    private fun prefix(ch: Channel): String = if (isGlobal(ch)) "/v2" else ""
+    /**
+     * 计费域前缀：源码 billingMeterPaths 口径 ——
+     * CN 用 /v2/billing/meter 族，国际用 /billing/meter 族（无 v2），404 时互相回退。
+     */
+    private fun billingPrefix(ch: Channel): String = if (isGlobal(ch)) "" else "/v2"
 
     private fun modelsPath(ch: Channel): String =
         if (isGlobal(ch)) "/v2/enterprises/personal/models"
         else "/console/enterprises/personal/models"
 
-    private fun resourcePath(ch: Channel): String = prefix(ch) + "/billing/meter/get-user-resource"
-    private fun checkinPath(ch: Channel): String = prefix(ch) + "/billing/meter/daily-checkin"
-    private fun claimGiftPath(ch: Channel): String = prefix(ch) + "/billing/meter/claim-gift"
-    private fun tasksPath(ch: Channel): String = prefix(ch) + "/activity/growth/tasks"
+    private fun resourcePath(ch: Channel): String = billingPrefix(ch) + "/billing/meter/get-user-resource"
+    private fun checkinPath(ch: Channel): String = billingPrefix(ch) + "/billing/meter/daily-checkin"
+    private fun claimGiftPath(ch: Channel): String = billingPrefix(ch) + "/billing/meter/claim-gift"
+
+    /** 任务域：走 chat base 无前缀（源码 task_runner 用 {chat}/activity/growth/tasks）。 */
+    private fun tasksPath(ch: Channel): String = "/activity/growth/tasks"
+    private fun energyPath(ch: Channel): String = "/v2/activity/growth/energy"
 
     // ---------- 底层请求 ----------
 
@@ -231,20 +241,67 @@ object WorkBuddyApi {
 
     // ---------- 积分 / 签到 ----------
 
-    data class Resource(val credits: Long? = null, val nickname: String? = null)
+    /** 账号资源与状态。 */
+    data class AccountInfo(
+        val uid: String = "",
+        val nickname: String = "",
+        val creditsRemain: Long? = null,
+        val creditsTotal: Long? = null,
+        val creditsUsed: Long? = null,
+        val usable: Boolean = true,
+        val statusReason: String = "",
+    ) {
+        /** 使用百分比 0..100。 */
+        val percent: Int
+            get() {
+                val used = creditsUsed ?: 0
+                val total = creditsTotal ?: 0
+                if (total <= 0) return 0
+                return ((used * 100) / total).toInt().coerceIn(0, 100)
+            }
+    }
 
-    suspend fun fetchResource(ch: Channel): Resource? = withContext(Dispatchers.IO) {
+    suspend fun fetchAccount(ch: Channel): AccountInfo? = withContext(Dispatchers.IO) {
         val base = ch.baseUrl.trim().trimEnd('/')
         val (code, text) = request(ch, base + resourcePath(ch), "GET")
         if (code !in 200..299) return@withContext null
         val data = unwrap(text) as? JsonObject ?: return@withContext null
+
         fun num(vararg keys: String): Long? = keys.firstNotNullOfOrNull { k ->
             (data[k] as? JsonPrimitive)?.content?.toLongOrNull()
         }
-        Resource(
-            credits = num("credits", "credit", "balance", "remainCredits", "availableCredits"),
-            nickname = (data["nickname"] as? JsonPrimitive)?.content,
+        fun str(vararg keys: String): String? = keys.firstNotNullOfOrNull { k ->
+            (data[k] as? JsonPrimitive)?.content?.takeIf { it.isNotBlank() }
+        }
+
+        val remain = num("credits", "credit", "balance", "remainCredits", "availableCredits", "remainingCredits")
+        val total = num("totalCredits", "total", "total_credits", "quota", "totalQuota")
+        val used = num("usedCredits", "used", "used_credits")
+            ?: if (remain != null && total != null) (total - remain).coerceAtLeast(0) else null
+
+        AccountInfo(
+            uid = str("uid", "userId", "user_id") ?: ch.appKind,
+            nickname = str("nickname", "name", "userName") ?: "",
+            creditsRemain = remain,
+            creditsTotal = total,
+            creditsUsed = used,
+            usable = !(str("status")?.equals("disabled", true) ?: false),
+            statusReason = str("reason", "statusReason") ?: "",
         )
+    }
+
+    suspend fun fetchResource(ch: Channel): AccountInfo? = fetchAccount(ch)
+
+    /** 能量与连续签到天数。 */
+    suspend fun fetchEnergy(ch: Channel): Pair<Long?, Long?> = withContext(Dispatchers.IO) {
+        val base = ch.baseUrl.trim().trimEnd('/')
+        val (code, text) = request(ch, base + energyPath(ch), "GET")
+        if (code !in 200..299) return@withContext (null to null)
+        val data = unwrap(text) as? JsonObject ?: return@withContext (null to null)
+        fun num(vararg keys: String): Long? = keys.firstNotNullOfOrNull { k ->
+            (data[k] as? JsonPrimitive)?.content?.toLongOrNull()
+        }
+        num("balance", "energy") to num("streak", "continuousDays", "streakDays")
     }
 
     suspend fun dailyCheckin(ch: Channel): Pair<Boolean, String> = withContext(Dispatchers.IO) {
@@ -268,9 +325,11 @@ object WorkBuddyApi {
     data class GrowthTask(
         val code: String,
         val name: String,
-        val status: String = "",
-        val claimable: Boolean = false,
+        val desc: String = "",
+        val progress: String = "",
         val reward: String = "",
+        val claimable: Boolean = false,
+        val accepted: Boolean = true,
     )
 
     /** 拉取成长任务列表。 */
@@ -298,14 +357,32 @@ object WorkBuddyApi {
                 ?: false
             val reward = (o["reward"] as? JsonPrimitive)?.content
                 ?: (o["credits"] as? JsonPrimitive)?.content ?: ""
+            val desc = (o["description"] as? JsonPrimitive)?.content
+                ?: (o["desc"] as? JsonPrimitive)?.content ?: ""
+            val cur = (o["progress"] as? JsonPrimitive)?.content
+                ?: (o["current"] as? JsonPrimitive)?.content ?: ""
+            val tot = (o["target"] as? JsonPrimitive)?.content
+                ?: (o["total"] as? JsonPrimitive)?.content ?: ""
+            val prog = if (cur.isNotBlank() && tot.isNotBlank()) "$cur/$tot" else cur
+            val accepted = (o["accepted"] as? JsonPrimitive)?.content?.toBooleanStrictOrNull() ?: true
             GrowthTask(
                 code = tc,
                 name = name,
-                status = status,
-                claimable = !claimed && (finished || status == "finished" || status == "completed"),
+                desc = desc,
+                progress = prog,
                 reward = reward,
+                claimable = !claimed && (finished || status == "finished" || status == "completed"),
+                accepted = accepted,
             )
         }
+    }
+
+    /** 领取单个任务奖励。 */
+    suspend fun claimTask(ch: Channel, code: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        val base = ch.baseUrl.trim().trimEnd('/')
+        val (http, text) = request(ch, "$base/activity/growth/tasks/$code/claim", "POST", null)
+        if (http !in 200..299) return@withContext false to "HTTP $http：${text.take(120)}"
+        true to "已领取"
     }
 
     /** 一键领取所有可领任务奖励。返回（成功数，失败数，说明）。 */

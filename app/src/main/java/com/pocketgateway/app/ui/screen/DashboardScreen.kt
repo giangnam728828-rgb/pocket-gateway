@@ -158,7 +158,4 @@ private fun StatItem(label: String, value: String) {
     }
 }
 
-private fun copyToClipboard(context: Context, text: String) {
-    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    cm.setPrimaryClip(ClipData.newPlainText("baseUrl", text))
-}
+

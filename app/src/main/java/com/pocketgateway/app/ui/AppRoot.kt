@@ -3,10 +3,11 @@ package com.pocketgateway.app.ui
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Article
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Article
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -21,19 +22,20 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.pocketgateway.app.ui.screen.AppAccountScreen
 import com.pocketgateway.app.ui.screen.ChannelsScreen
-import com.pocketgateway.app.ui.screen.DashboardScreen
-import com.pocketgateway.app.ui.screen.LogsScreen
-import com.pocketgateway.app.ui.screen.SettingsScreen
+import com.pocketgateway.app.ui.screen.ModelsScreen
+import com.pocketgateway.app.ui.screen.OverviewScreen
+import com.pocketgateway.app.ui.screen.TasksScreen
 import com.pocketgateway.app.ui.viewmodel.GatewayViewModel
 
 @Composable
 fun AppRoot(vm: GatewayViewModel = viewModel()) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     val tabs = listOf(
-        "总览" to Icons.Filled.Home,
-        "APP 账号" to Icons.Filled.AccountCircle,
+        "概览" to Icons.Filled.Home,
+        "模型" to Icons.Filled.List,
+        "账号" to Icons.Filled.AccountCircle,
+        "任务" to Icons.Filled.Article,
         "渠道" to Icons.Filled.Settings,
-        "日志" to Icons.Filled.Article,
     )
 
     Scaffold(
@@ -52,10 +54,11 @@ fun AppRoot(vm: GatewayViewModel = viewModel()) {
     ) { padding ->
         Box(modifier = Modifier.padding(padding)) {
             when (tab) {
-                0 -> DashboardScreen(vm)
-                1 -> AppAccountScreen(vm)
-                2 -> ChannelsScreen(vm)
-                3 -> LogsScreen(vm)
+                0 -> OverviewScreen(vm)
+                1 -> ModelsScreen(vm)
+                2 -> AppAccountScreen(vm)
+                3 -> TasksScreen(vm)
+                4 -> ChannelsScreen(vm)
             }
         }
     }
