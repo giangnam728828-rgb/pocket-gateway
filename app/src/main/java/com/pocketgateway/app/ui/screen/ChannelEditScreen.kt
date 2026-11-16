@@ -33,6 +33,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import com.pocketgateway.app.core.model.Channel
+import com.pocketgateway.app.core.model.ProviderPresets
 import com.pocketgateway.app.core.model.ProviderType
 
 /**
@@ -57,6 +58,9 @@ fun ChannelEditDialog(
     var weight by remember { mutableStateOf(initial.weight.toString()) }
     var timeout by remember { mutableStateOf(if (initial.timeoutMs > 0) initial.timeoutMs.toString() else "") }
     var typeExpanded by remember { mutableStateOf(false) }
+    var presetExpanded by remember { mutableStateOf(false) }
+    var headerTplExpanded by remember { mutableStateOf(false) }
+    var presetLabel by remember { mutableStateOf("官方 API 预设（一键填充）") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -70,6 +74,50 @@ fun ChannelEditDialog(
                     .padding(end = 4.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
+                // 官方 API 预设（一键填充）
+                ExposedDropdownMenuBox(
+                    expanded = presetExpanded,
+                    onExpandedChange = { presetExpanded = it },
+                ) {
+                    OutlinedTextField(
+                        value = presetLabel,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("官方 API 预设") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(presetExpanded) },
+                        modifier = Modifier.fillMaxWidth().menuAnchor(),
+                        supportingText = { Text("选择官方公开 API 平台，自动填入地址/鉴权/模型名") },
+                    )
+                    ExposedDropdownMenu(
+                        expanded = presetExpanded,
+                        onDismissRequest = { presetExpanded = false },
+                    ) {
+                        ProviderPresets.OFFICIAL.forEach { p ->
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text(p.label)
+                                        if (p.note.isNotBlank()) {
+                                            Text(p.note, style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                    }
+                                },
+                                onClick = {
+                                    name = p.label
+                                    type = p.type
+                                    baseUrl = p.baseUrl
+                                    authHeader = p.authHeader
+                                    extraHeaders = p.extraHeaders
+                                    modelsText = p.models.joinToString("\n")
+                                    presetLabel = "已选择：${p.label}"
+                                    presetExpanded = false
+                                },
+                            )
+                        }
+                    }
+                }
+
                 OutlinedTextField(
                     value = name, onValueChange = { name = it },
                     label = { Text("渠道名称") },
@@ -130,9 +178,48 @@ fun ChannelEditDialog(
                     value = extraHeaders, onValueChange = { extraHeaders = it },
                     label = { Text("额外请求头") },
                     placeholder = { Text("每行一条，如：\nHTTP-Referer: https://xxx\nX-Title: MyApp") },
+                    supportingText = { Text("支持 {key} 占位符；Cookie 也可在此自行添加") },
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 2,
                 )
+
+                // 标准客户端请求头模板
+                ExposedDropdownMenuBox(
+                    expanded = headerTplExpanded,
+                    onExpandedChange = { headerTplExpanded = it },
+                ) {
+                    OutlinedTextField(
+                        value = "请求头模板（标准客户端）",
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("请求头模板") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(headerTplExpanded) },
+                        modifier = Modifier.fillMaxWidth().menuAnchor(),
+                        supportingText = { Text("仅标准 UA/Accept 头，用于自有服务识别客户端；不含风控绕过字段") },
+                    )
+                    ExposedDropdownMenu(
+                        expanded = headerTplExpanded,
+                        onDismissRequest = { headerTplExpanded = false },
+                    ) {
+                        ProviderPresets.HEADER_TEMPLATES.forEach { tpl ->
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text(tpl.label)
+                                        if (tpl.note.isNotBlank()) {
+                                            Text(tpl.note, style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                    }
+                                },
+                                onClick = {
+                                    extraHeaders = tpl.headers
+                                    headerTplExpanded = false
+                                },
+                            )
+                        }
+                    }
+                }
 
                 OutlinedTextField(
                     value = modelsText, onValueChange = { modelsText = it },
