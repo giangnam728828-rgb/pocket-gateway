@@ -98,34 +98,51 @@ print(resp.choices[0].message.content)
 ## APP 账号直连（底部「APP 账号」页）
 
 有些服务**不公开接口地址、不提供 API Key**，强制只能在自己的 APP / 网页里使用（如 WorkBuddy）。
-App 底部导航栏有独立的 **「APP 账号」** 页面，专门处理这类服务——**在内置页面登录一次即可**，
-不用手动填 URL、API Key 或请求格式。
+App 底部导航栏有独立的 **「APP 账号」** 页面，用**设备授权（OAuth Device Flow）**登录——
+这是官方 CLI / 插件使用的登录路径，比抓网页 Cookie 稳定。
 
 ### 使用步骤
 
 1. 底部导航 → **「APP 账号」**
-2. 选择应用（如 WorkBuddy）→ 点 **「登录」**
-3. 在内置页面用你的账号完成登录
-4. 点 **「检测登录状态」**，检测到凭证后点 **「生成接入信息并保存渠道」**
-5. 页面下方直接显示 **BASE URL / API KEY / 模型列表**，复制到你的 AI 客户端即可用
+2. 选择 **WorkBuddy（国内版）** 或 **（国际版）** → 点 **「登录」**
+3. 自动跳转浏览器授权页 → 用你的账号登录并授权
+4. 回到 App → 点 **「我已完成授权」**
+5. 页面直接显示 **BASE URL / API KEY / 模型列表**，复制到 AI 客户端即可
 
-### 自动完成的事
+### 协议实现（依据开源 workbuddy2api）
 
-| 项目 | 说明 |
+| 项目 | 实现 |
 |---|---|
-| 登录 | 内置 WebView，支持账号密码 / 扫码等官方登录方式 |
-| 凭证提取 | 登录后自动从 Cookie 提取会话凭证 |
-| 渠道生成 | 自动创建「APP 账号直连」渠道并保存 |
-| 接入信息 | 自动生成 Base URL、API Key、模型列表并展示 |
-| 请求适配 | 内置该 APP 的端点、请求格式、官方客户端请求头、响应转换 |
+| 登录 | `POST /v2/plugin/auth/state?platform=CLI` → 拿 state + authUrl |
+| 换取凭证 | `GET /v2/plugin/auth/token?state=` → accessToken |
+| 账号信息 | `GET /v2/plugin/login/account?state=` → uid / nickname |
+| 上游（国内） | `https://copilot.tencent.com`，Origin `https://www.codebuddy.cn` |
+| 上游（国际） | `https://www.workbuddy.ai`，Origin 同域 |
+| 出站 UA | `WorkBuddy/5.5.4 WorkBuddy/5.5.4 CLI/2.137.1` |
+| 鉴权 | `Authorization: Bearer <accessToken>` + `X-User-Id` |
 
-### 与「渠道」页的区别
+### 关于 11128「渠道校验失败」
 
-- **「APP 账号」页**：面向不公开接口的服务，登录即用，零配置
-- **「渠道」页**：面向有公开 API 的平台，手动填 Base URL / API Key
+上游要求**会话头族恒在**，尤其是 `X-Conversation-ID`。缺这个头会被判定为非官方客户端，
+返回 `400 code=11128 / 11-128`。本网关已自动注入完整会话头族：
+
+```
+X-Conversation-ID          （会话级，必发）
+X-Conversation-Request-ID  （轮级聚合主键）
+X-Conversation-Message-ID  （消息级）
+X-Request-ID / X-Root-Request-ID / X-Trace-ID
+X-B3-TraceId / X-B3-SpanId / X-B3-Sampled
+```
+
+同时注入官方桌面端身份头：`X-Agent-Purpose`、`X-IDE-Name/Type/Version`、`X-Product`。
+
+### 备用：手动填 Token
+
+如果设备授权在你网络下不可用，可点「手动填 Token」，粘贴从其他工具
+（如 workbuddy2api 的 `auths/*.json`）拿到的 accessToken。
 
 > 仅用于**你本人有权访问**的账号，仅本地/受信网络使用。
-> 不含逆向签名算法、破解风控或复用他人会话的能力。
+> 请遵守服务条款；因使用非官方客户端导致的账号风险由使用者自行承担。
 
 ## APP 账号直连（手动配置方式）
 
