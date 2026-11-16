@@ -25,6 +25,10 @@ object ModelFetcher {
      * 拉取模型列表。返回去重后的模型名列表；失败返回 null。
      */
     suspend fun fetch(channel: Channel): Result<List<String>> = withContext(Dispatchers.IO) {
+        // APP 直连类型走专用接口（真实端点与通用 OpenAI 不同）
+        if (channel.type == com.pocketgateway.app.core.model.ProviderType.APP_NATIVE) {
+            return@withContext com.pocketgateway.app.core.appaccount.WorkBuddyApi.fetchModels(channel)
+        }
         runCatching {
             val adapter = AdapterRegistry.get(channel)
             val path = adapter.modelsPath() ?: throw IllegalStateException("该协议没有标准 models 端点")

@@ -39,6 +39,7 @@ import com.pocketgateway.app.core.appaccount.AppAccounts
 import com.pocketgateway.app.core.appaccount.DeviceAuthClient
 import com.pocketgateway.app.core.appaccount.LoginSession
 import com.pocketgateway.app.core.adapter.ModelFetcher
+import com.pocketgateway.app.core.appaccount.WorkBuddyApi
 import com.pocketgateway.app.core.appaccount.buildAppChannel
 import com.pocketgateway.app.core.model.Channel
 import com.pocketgateway.app.core.model.ProviderType
@@ -85,6 +86,29 @@ fun AppAccountScreen(vm: GatewayViewModel) {
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+
+        // 顶部总览：已接入时直接显示可复制的接入信息
+        if (appChannels.isNotEmpty()) {
+            val main = appChannels.first()
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+            ) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("复制这两项到你的 AI 客户端", fontWeight = FontWeight.Bold)
+                    InfoRow("BASE URL", vm.baseUrl.value, copyable = true)
+                    InfoRow(
+                        "API KEY",
+                        config.accessToken.ifBlank { vm.ensureAccessToken() },
+                        copyable = true,
+                    )
+                    Text(
+                        "模型：" + main.models.joinToString(", ").ifBlank { "glm-5.2" },
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
 
         // 选择账号类型
         Card(modifier = Modifier.fillMaxWidth()) {
@@ -170,6 +194,8 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                                     val ch = buildAppChannel(acc, cred)
                                     vm.upsertChannel(ch)
                                     session = null
+                                    // 自动启动网关，省去手动点启动
+                                    runCatching { vm.startGateway() }
                                     // 登录成功后自动从上游拉取真实模型列表
                                     status = "✅ 登录成功${if (cred.nickname.isNotBlank()) "：${cred.nickname}" else ""}，正在获取模型…"
                                     val fetched = ModelFetcher.fetch(ch)
@@ -316,6 +342,9 @@ private fun AccessInfoCard(
     val scope = rememberCoroutineScope()
     val ctx = LocalContext.current
     var fetching by remember { mutableStateOf(false) }
+    var signing by remember { mutableStateOf(false) }
+    var credits by remember { mutableStateOf<Long?>(null) }
+    var errorMsg by remember { mutableStateOf<String?>(null) }
     var currentToken by remember(accessToken) { mutableStateOf(accessToken) }
 
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -409,6 +438,59 @@ private fun AccessInfoCard(
                         copyToClipboard(ctx, channel.models.joinToString(","))
                         onMessage("模型列表已复制")
                     }) { Text("复制") }
+                }
+            }
+
+            HorizontalDivider()
+
+            // 积分与签到
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("积分", style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        when {
+                            errorMsg != null -> "获取失败"
+                            credits != null -> "$credits"
+                            else -> "—"
+                        },
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(enabled = !signing, onClick = {
+                        signing = true
+                        scope.launch {
+                            val (ok, msg) = WorkBuddyApi.dailyCheckin(channel)
+                            val res = WorkBuddyApi.fetchResource(channel)
+                            signing = false
+                            credits = res?.credits ?: credits
+                            onMessage(msg)
+                        }
+                    }) { Text(if (signing) "签到中…" else "一键签到") }
+
+                    OutlinedButton(enabled = !signing, onClick = {
+                        signing = true
+                        scope.launch {
+                            val (ok, msg) = WorkBuddyApi.claimGift(channel)
+                            signing = false
+                            onMessage(msg)
+                            WorkBuddyApi.fetchResource(channel)?.let { credits = it.credits }
+                        }
+                    }) { Text("领礼包") }
+
+                    OutlinedButton(onClick = {
+                        scope.launch {
+                            val res = WorkBuddyApi.fetchResource(channel)
+                            credits = res?.credits
+                            onMessage(if (res?.credits != null) "当前积分 ${res.credits}" else "积分获取失败")
+                        }
+                    }) { Text("刷新积分") }
                 }
             }
         }

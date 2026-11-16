@@ -111,15 +111,27 @@ App 底部导航栏有独立的 **「APP 账号」** 页面，用**设备授权�
 
 ### 协议实现（依据开源 workbuddy2api）
 
-| 项目 | 实现 |
-|---|---|
-| 登录 | `POST /v2/plugin/auth/state?platform=CLI` → 拿 state + authUrl |
-| 换取凭证 | `GET /v2/plugin/auth/token?state=` → accessToken |
-| 账号信息 | `GET /v2/plugin/login/account?state=` → uid / nickname |
-| 上游（国内） | `https://copilot.tencent.com`，Origin `https://www.codebuddy.cn` |
-| 上游（国际） | `https://www.workbuddy.ai`，Origin 同域 |
-| 出站 UA | `WorkBuddy/5.5.4 WorkBuddy/5.5.4 CLI/2.137.1` |
-| 鉴权 | `Authorization: Bearer <accessToken>` + `X-User-Id` |
+| 用途 | 国内 `copilot.tencent.com` | 国际 `www.workbuddy.ai` |
+|---|---|---|
+| 登录-申请 | `POST /v2/plugin/auth/state?platform=CLI` | 同 |
+| 登录-换票 | `GET /v2/plugin/auth/token?state=` | 同 |
+| 登录-账号 | `GET /v2/plugin/login/account?state=` | 同 |
+| 对话 | `POST /v2/chat/completions` | 同 |
+| **模型** | `GET /console/enterprises/personal/models` | `GET /v2/enterprises/personal/models` |
+| 配置 | `GET /v3/config` | 同 |
+| **签到** | `POST /billing/meter/daily-checkin` | `POST /v2/billing/meter/daily-checkin` |
+| **积分** | `GET /billing/meter/get-user-resource` | `GET /v2/billing/meter/get-user-resource` |
+| **礼包** | `POST /billing/meter/claim-gift` | `POST /v2/billing/meter/claim-gift` |
+
+> 注意：模型端点**不是** `/v1/models`（会 404 Route Not Found）。网关已按上表正确调用。
+
+### 一键签到与积分
+
+「已接入」卡片内提供：
+- **积分**：实时显示当前积分
+- **一键签到**：调用 `daily-checkin`，完成后自动刷新积分
+- **领礼包**：调用 `claim-gift`
+- **刷新积分**：重新拉取资源
 
 ### 关于 11128「渠道校验失败」
 
