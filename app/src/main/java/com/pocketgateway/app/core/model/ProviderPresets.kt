@@ -30,6 +30,31 @@ data class HeaderTemplate(
     val note: String = "",
 )
 
+/**
+ * 私有接口渠道模板（APP / 网站内部接口）。
+ *
+ * 用于**你自己有权访问**、但只在其 APP 或网页内部调用的服务。
+ * 选中后一键填入自定义透传的配置骨架（请求方法、模板、签名、响应映射等），
+ * 你只需补上自己抓到的地址、请求头和凭证。
+ *
+ * 本模板库不包含任何第三方平台的逆向逻辑、签名破解或凭证。
+ */
+data class PrivatePreset(
+    val key: String,
+    val label: String,
+    val kind: String,
+    val baseUrl: String = "",
+    val requestMethod: String = "POST",
+    val authHeader: String = "",
+    val extraHeaders: String = "",
+    val requestTemplate: String = "",
+    val responseContentPath: String = "",
+    val signHeader: String = "",
+    val signAlgorithm: String = "",
+    val signTemplate: String = "",
+    val note: String = "",
+)
+
 object ProviderPresets {
 
     /** 提供官方公开 API 的平台，一键配置。 */
@@ -156,6 +181,73 @@ object ProviderPresets {
             key = "web", label = "Web 客户端 UA",
             headers = "User-Agent: Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36\nAccept: application/json, text/plain, */*\nAccept-Language: zh-CN,zh;q=0.9",
             note = "仅设置通用 UA / Accept 头，用于兼容要求浏览器 UA 的自有服务。",
+        ),
+    )
+
+    /**
+     * 私有接口渠道模板（APP / 网站内部接口）。
+     *
+     * 这些模板只提供「配置骨架」——把常见私有接口的调用方式抽象成可填字段，
+     * 你用自己的账号抓包后填入地址/请求头/凭证即可接入**你自己有权访问**的服务。
+     * 不含任何第三方平台的具体接口地址、密钥或逆向逻辑。
+     */
+    val PRIVATE: List<PrivatePreset> = listOf(
+        PrivatePreset(
+            key = "app_bearer", label = "APP 接口 · Bearer Token", kind = "APP",
+            requestMethod = "POST",
+            authHeader = "Authorization: Bearer {key}",
+            extraHeaders = "Content-Type: application/json",
+            requestTemplate = "{\"model\":\"{{model}}\",\"messages\":{{messages}},\"stream\":{{stream}}}",
+            responseContentPath = "choices[0].message.content",
+            note = "APP 用 Bearer Token 鉴权、请求体接近 OpenAI 格式时的骨架。",
+        ),
+        PrivatePreset(
+            key = "app_cookie", label = "APP/网页 · Cookie 会话", kind = "APP/网页",
+            requestMethod = "POST",
+            extraHeaders = "Cookie: {key}\nContent-Type: application/json",
+            requestTemplate = "{\"model\":\"{{model}}\",\"messages\":{{messages}}}",
+            responseContentPath = "data.content",
+            note = "用登录 Cookie 维持会话。API Key 一栏填完整 Cookie 字符串。",
+        ),
+        PrivatePreset(
+            key = "app_query_sign", label = "APP 接口 · 时间戳+签名", kind = "APP",
+            requestMethod = "POST",
+            extraHeaders = "Content-Type: application/json",
+            requestTemplate = "{\"model\":\"{{model}}\",\"messages\":{{messages}},\"timestamp\":\"{{timestamp}}\",\"nonce\":\"{{nonce}}\"}",
+            responseContentPath = "data.text",
+            signHeader = "X-Sign",
+            signAlgorithm = "hmac-sha256",
+            signTemplate = "app_key={{key}}&timestamp={{timestamp}}&nonce={{nonce}}&data={{body}}",
+            note = "常见 APP 签名方式：时间戳+随机数参与签名，签名头随请求注入。",
+        ),
+        PrivatePreset(
+            key = "web_md5_sign", label = "网页接口 · MD5 签名", kind = "网页",
+            requestMethod = "POST",
+            extraHeaders = "Content-Type: application/x-www-form-urlencoded",
+            requestTemplate = "model={{model}}&data={{messages}}&t={{timestamp}}",
+            responseContentPath = "result.content",
+            signHeader = "sign",
+            signAlgorithm = "md5",
+            signTemplate = "model={{model}}&data={{messages}}&t={{timestamp}}&key={{key}}",
+            note = "表单提交 + MD5 签名。适合网页端 ajax 接口。",
+        ),
+        PrivatePreset(
+            key = "app_get_stream", label = "APP 接口 · GET + 查询参数", kind = "APP",
+            requestMethod = "GET",
+            authHeader = "Authorization: Bearer {key}",
+            note = "GET 方式调用，参数放查询参数区（每行 key=value）。",
+        ),
+        PrivatePreset(
+            key = "sse_text", label = "私有接口 · SSE 文本流", kind = "APP/网页",
+            requestMethod = "POST",
+            extraHeaders = "Accept: text/event-stream\nContent-Type: application/json",
+            requestTemplate = "{\"prompt\":{{messages}},\"stream\":true}",
+            responseContentPath = "delta",
+            note = "上游返回 SSE 流式文本时的骨架，响应路径填每行的文本字段。",
+        ),
+        PrivatePreset(
+            key = "blank", label = "空白自定义渠道", kind = "自定义",
+            note = "全部留空，按需自行填写。",
         ),
     )
 }

@@ -66,6 +66,8 @@ fun ChannelEditDialog(
     var signKey by remember { mutableStateOf(initial.signKey) }
     var methodExpanded by remember { mutableStateOf(false) }
     var signAlgoExpanded by remember { mutableStateOf(false) }
+    var privateExpanded by remember { mutableStateOf(false) }
+    var privateLabel by remember { mutableStateOf("私有接口模板（APP/网页，一键填骨架）") }
     var weight by remember { mutableStateOf(initial.weight.toString()) }
     var timeout by remember { mutableStateOf(if (initial.timeoutMs > 0) initial.timeoutMs.toString() else "") }
     var typeExpanded by remember { mutableStateOf(false) }
@@ -85,6 +87,55 @@ fun ChannelEditDialog(
                     .padding(end = 4.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
+                // 私有接口模板（APP / 网站内部接口）——放在最上方，最常用
+                ExposedDropdownMenuBox(
+                    expanded = privateExpanded,
+                    onExpandedChange = { privateExpanded = it },
+                ) {
+                    OutlinedTextField(
+                        value = privateLabel,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("私有接口模板（APP / 网页）") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(privateExpanded) },
+                        modifier = Modifier.fillMaxWidth().menuAnchor(),
+                        supportingText = { Text("一键填入 APP/网页内部接口的配置骨架，补上你自己的地址与凭证") },
+                    )
+                    ExposedDropdownMenu(
+                        expanded = privateExpanded,
+                        onDismissRequest = { privateExpanded = false },
+                    ) {
+                        ProviderPresets.PRIVATE.forEach { p ->
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text("[${p.kind}] ${p.label}")
+                                        if (p.note.isNotBlank()) {
+                                            Text(p.note, style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                    }
+                                },
+                                onClick = {
+                                    name = p.label
+                                    type = ProviderType.CUSTOM
+                                    if (p.baseUrl.isNotBlank()) baseUrl = p.baseUrl
+                                    requestMethod = p.requestMethod
+                                    if (p.authHeader.isNotBlank()) authHeader = p.authHeader
+                                    if (p.extraHeaders.isNotBlank()) extraHeaders = p.extraHeaders
+                                    if (p.requestTemplate.isNotBlank()) requestTemplate = p.requestTemplate
+                                    if (p.responseContentPath.isNotBlank()) responseContentPath = p.responseContentPath
+                                    if (p.signHeader.isNotBlank()) signHeader = p.signHeader
+                                    if (p.signAlgorithm.isNotBlank()) signAlgorithm = p.signAlgorithm
+                                    if (p.signTemplate.isNotBlank()) signTemplate = p.signTemplate
+                                    privateLabel = "已选择：[${p.kind}] ${p.label}"
+                                    privateExpanded = false
+                                },
+                            )
+                        }
+                    }
+                }
+
                 // 官方 API 预设（一键填充）
                 ExposedDropdownMenuBox(
                     expanded = presetExpanded,
