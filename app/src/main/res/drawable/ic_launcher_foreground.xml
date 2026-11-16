@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 一个简化的“网关/节点”图形 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M54,30m-9,0a9,9 0,1 1,18 0a9,9 0,1 1,-18 0" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M30,74m-8,0a8,8 0,1 1,16 0a8,8 0,1 1,-16 0" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M78,74m-8,0a8,8 0,1 1,16 0a8,8 0,1 1,-16 0" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M50,40 L34,66 L44,66 L54,46 L64,66 L74,66 L58,40 Z" />
+</vector>
