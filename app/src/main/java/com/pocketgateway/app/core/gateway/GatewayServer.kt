@@ -248,7 +248,16 @@ class GatewayServer(
                 } else {
                     val resp = upstream.call(channel, adapter, "chat", payload, timeout)
                     val out = if (resp.status in 200..299) {
-                        adapter.transformResponse(channel, resp.body) ?: resp.body
+                        // 上游只支持流式（非流式返回 11101），非流式客户端在此聚合 SSE
+                        val looksSse = (resp.contentType?.contains("event-stream", true) == true) ||
+                            resp.body.trimStart().startsWith("data:")
+                        if (channel.type == com.pocketgateway.app.core.model.ProviderType.APP_NATIVE && looksSse) {
+                            com.pocketgateway.app.core.adapter.WorkBuddyAdapter
+                                .aggregateSse(resp.body, model ?: "workbuddy")
+                                ?: adapter.transformResponse(channel, resp.body) ?: resp.body
+                        } else {
+                            adapter.transformResponse(channel, resp.body) ?: resp.body
+                        }
                     } else {
                         resp.body
                     }

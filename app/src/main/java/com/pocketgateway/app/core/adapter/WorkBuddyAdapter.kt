@@ -133,7 +133,9 @@ class WorkBuddyAdapter : ProviderAdapter {
         val wb = buildJsonObject {
             put("model", JsonPrimitive(mapped.modelName() ?: "default"))
             put("messages", msgs)
-            put("stream", JsonPrimitive(stream))
+            // 上游只支持流式：非流式请求会被拒（code=11101）。
+            // 这里恒发 true，非流式客户端由网关聚合 SSE 后再返回。
+            put("stream", JsonPrimitive(true))
             if (temp != null) put("temperature", JsonPrimitive(temp))
             if (maxTokens != null) put("max_tokens", JsonPrimitive(maxTokens))
             put("conversationId", JsonPrimitive(newHexId()))
@@ -230,6 +232,50 @@ class WorkBuddyAdapter : ProviderAdapter {
     }
 
     companion object {
+        /**
+         * 把上游 SSE 全文聚合成标准 OpenAI 非流式响应。
+         * 服务端只支持流式（非流式直接 11101），故非流式客户端需要网关侧聚合。
+         */
+        fun aggregateSse(raw: String, model: String): String? {
+            val texts = StringBuilder()
+            for (line in raw.lineSequence()) {
+                val t = line.trim()
+                if (t.isEmpty() || t.startsWith(":") || t.startsWith("event:")) continue
+                val data = t.removePrefix("data:").trim()
+                if (data.isEmpty() || data == "[DONE]") continue
+                runCatching {
+                    val el = Json.parseToJsonElement(data)
+                    val obj = el as? JsonObject ?: return@runCatching
+                    // {code,msg,data} 信封
+                    val d = obj["data"]
+                    val target = if (d is JsonObject) d else obj
+                    val choices = target["choices"]
+                    if (choices is JsonArray) {
+                        val first = choices.firstOrNull() as? JsonObject
+                        (first?.get("delta") as? JsonObject)?.string("content")?.let { texts.append(it) }
+                            ?: (first?.get("message") as? JsonObject)?.string("content")?.let { texts.append(it) }
+                    } else {
+                        listOf("content", "text", "answer", "delta").forEach { k ->
+                            (target[k] as? JsonPrimitive)?.content?.let { if (it.isNotBlank()) texts.append(it) }
+                        }
+                    }
+                }
+            }
+            if (texts.isEmpty()) return null
+            return buildJsonObject {
+                put("id", JsonPrimitive("chatcmpl-${System.currentTimeMillis()}"))
+                put("object", JsonPrimitive("chat.completion"))
+                put("created", JsonPrimitive(System.currentTimeMillis() / 1000))
+                put("model", JsonPrimitive(model))
+                put("choices", Json.parseToJsonElement(
+                    """[{"index":0,"message":{"role":"assistant","content":${JsonPrimitive(texts.toString())}},"finish_reason":"stop"}]"""
+                ))
+                put("usage", Json.parseToJsonElement(
+                    """{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}"""
+                ))
+            }.toString()
+        }
+
         const val CLIENT_VER = "5.5.4"
         const val CLI_VER = "2.137.1"
         const val CN_ORIGIN = "https://www.codebuddy.cn"

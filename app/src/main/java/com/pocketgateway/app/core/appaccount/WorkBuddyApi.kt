@@ -68,12 +68,12 @@ object WorkBuddyApi {
         ch.baseUrl.contains("workbuddy.ai", ignoreCase = true)
 
     /**
-     * 计费域路径候选（实测口径）：
-     * copilot.tencent.com/billing/meter/get-user-resource → 401 JSON（正确路由）
-     * copilot.tencent.com/v2/billing/meter/...           → 401 HTML（错误路由）
-     * 故不区分地域，一律先试无 /v2，再回退带 /v2。
+     * 计费域路径（实测口径，带真实凭证验证）：
+     * /billing/meter/get-user-resource     → 404 page not found（不存在）
+     * /v2/billing/meter/get-user-resource  → 需凭证，正确路由
+     * 故统一使用 /v2 前缀。
      */
-    private fun billingPrefix(ch: Channel): String = ""
+    private fun billingPrefix(ch: Channel): String = "/v2"
 
     private fun modelsPath(ch: Channel): String =
         if (isGlobal(ch)) "/v2/enterprises/personal/models"
