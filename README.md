@@ -95,6 +95,34 @@ print(resp.choices[0].message.content)
 | POST | `/v1/chat/completions` | 聊天补全（OpenAI 兼容） |
 | POST | `/v1/embeddings` | 向量嵌入（转发给 OpenAI 兼容渠道） |
 
+## 自定义透传渠道（适配非 OpenAI 格式的私有接口）
+
+选「自定义透传」类型，可对接**你自己有权访问**、但请求/响应格式与 OpenAI 不同的服务（如自有网站/APP 内部接口）。三个核心配置：
+
+**1. 请求体模板**（留空则原样透传 OpenAI 格式）
+用变量把 OpenAI 请求映射成目标格式，支持：
+- `{{model}}` 模型名（已做模型名映射）
+- `{{messages}}` 完整 messages 数组 JSON
+- `{{key}}` API Key
+- `{{stream}}` true/false
+
+示例（目标接口只要 `model` + `prompt` + `key`）：
+
+```json
+{"model":"{{model}}","prompt":{{messages}},"key":"{{key}}"}
+```
+
+**2. 响应内容路径**（留空则原样透传）
+从目标响应 JSON 中按路径提取文本，自动组装成标准 OpenAI 响应。支持点号和数组下标：
+- `data.text`
+- `data[0].text`
+- `choices[0].message.content`
+
+**3. 请求方法 / 查询参数**
+可改成 GET / PUT / PATCH 等；查询参数每行一条 `key=value`，拼到请求 URL。
+
+> 仅用于对接**你自己有权访问**的服务。本 App 不内置、也不提供任何第三方私有接口的逆向、签名破解或风控绕过能力。
+
 ## 常见问题
 
 **手机和电脑连不上？**
@@ -111,7 +139,7 @@ print(resp.choices[0].message.content)
 
 **某个平台接不上？**
 - 先看"官方 API 预设"里有没有该平台，有则一键填充后用你自己的官方 API Key 测试。
-- 内置预设只收录**提供公开 API** 的平台。对于只在自己网站/APP 内使用、没有公开 API 的服务，本 App 不支持逆向其私有接口——请使用其官方开放平台（若有）。
+- 内置预设只收录**提供公开 API** 的平台。若某服务没有公开 API，本 App 不提供对其私有接口的逆向或破解；如你**本人有权访问**该服务、且了解其请求格式，可用「自定义透传」+ 请求体模板 / 响应映射自行适配（见上文）。
 - 手动配置时用"OpenAI 兼容"类型 + 正确的 Base URL 和鉴权头测试。
 - Claude 注意鉴权头为 `x-api-key: {key}`，且需要 `anthropic-version`（选 Claude 类型会自动带）。
 - Gemini 的 key 走 URL 查询参数，选 Gemini 类型即可。

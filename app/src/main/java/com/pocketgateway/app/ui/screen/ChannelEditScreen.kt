@@ -55,6 +55,11 @@ fun ChannelEditDialog(
     var modelsText by remember { mutableStateOf(initial.models.joinToString("\n")) }
     var mappingText by remember { mutableStateOf(initial.modelMapping.entries.joinToString("\n") { "${it.key}=${it.value}" }) }
     var pathOverridesText by remember { mutableStateOf(initial.pathOverrides.entries.joinToString("\n") { "${it.key}=${it.value}" }) }
+    var requestMethod by remember { mutableStateOf(initial.requestMethod) }
+    var queryParamsText by remember { mutableStateOf(initial.queryParams) }
+    var requestTemplate by remember { mutableStateOf(initial.requestTemplate) }
+    var responseContentPath by remember { mutableStateOf(initial.responseContentPath) }
+    var methodExpanded by remember { mutableStateOf(false) }
     var weight by remember { mutableStateOf(initial.weight.toString()) }
     var timeout by remember { mutableStateOf(if (initial.timeoutMs > 0) initial.timeoutMs.toString() else "") }
     var typeExpanded by remember { mutableStateOf(false) }
@@ -248,6 +253,61 @@ fun ChannelEditDialog(
                     minLines = 2,
                 )
 
+                // 自定义透传专属配置：请求方法 / 查询参数 / 请求体模板 / 响应映射
+                if (type == ProviderType.CUSTOM) {
+                    ExposedDropdownMenuBox(
+                        expanded = methodExpanded,
+                        onExpandedChange = { methodExpanded = it },
+                    ) {
+                        OutlinedTextField(
+                            value = requestMethod,
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("请求方法") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(methodExpanded) },
+                            modifier = Modifier.fillMaxWidth().menuAnchor(),
+                        )
+                        ExposedDropdownMenu(
+                            expanded = methodExpanded,
+                            onDismissRequest = { methodExpanded = false },
+                        ) {
+                            listOf("POST", "GET", "PUT", "PATCH", "DELETE").forEach { m ->
+                                DropdownMenuItem(
+                                    text = { Text(m) },
+                                    onClick = { requestMethod = m; methodExpanded = false },
+                                )
+                            }
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = queryParamsText, onValueChange = { queryParamsText = it },
+                        label = { Text("查询参数") },
+                        placeholder = { Text("每行一条 key=value，如：\nsession=abc123") },
+                        supportingText = { Text("拼接到请求 URL 的 ? 之后") },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 2,
+                    )
+
+                    OutlinedTextField(
+                        value = requestTemplate, onValueChange = { requestTemplate = it },
+                        label = { Text("请求体模板（留空=透传 OpenAI 格式）") },
+                        placeholder = { Text("{\"model\":\"{{model}}\",\"prompt\":{{messages}},\"key\":\"{{key}}\"}") },
+                        supportingText = { Text("变量：{{model}} {{messages}} {{key}} {{stream}}；适配非 OpenAI 格式的私有接口") },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 4,
+                    )
+
+                    OutlinedTextField(
+                        value = responseContentPath, onValueChange = { responseContentPath = it },
+                        label = { Text("响应内容路径（留空=原样透传）") },
+                        placeholder = { Text("如：data.text 或 choices[0].message.content") },
+                        supportingText = { Text("从上游 JSON 响应提取文本，组装成 OpenAI 格式") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                }
+
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                     OutlinedTextField(
                         value = weight, onValueChange = { weight = it },
@@ -278,6 +338,10 @@ fun ChannelEditDialog(
                     models = modelsText.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList(),
                     modelMapping = parsePairs(mappingText),
                     pathOverrides = parsePairs(pathOverridesText),
+                    requestMethod = requestMethod.ifBlank { "POST" },
+                    queryParams = queryParamsText,
+                    requestTemplate = requestTemplate,
+                    responseContentPath = responseContentPath.trim(),
                     weight = weight.toIntOrNull()?.coerceAtLeast(1) ?: 1,
                     timeoutMs = timeout.toLongOrNull() ?: 0L,
                 )

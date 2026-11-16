@@ -108,6 +108,36 @@ object ProviderPresets {
             models = listOf("gemini-2.0-flash", "gemini-1.5-pro"),
             note = "Key 由适配器放入 URL 查询参数；填在 API Key 一栏。",
         ),
+        ChannelPreset(
+            key = "baidu", label = "百度文心千帆", type = ProviderType.OPENAI_COMPAT,
+            baseUrl = "https://qianfan.baidubce.com/v2", authHeader = ChannelPreset.BEARER,
+            models = listOf("ernie-4.0-8k", "ernie-3.5-8k"),
+            note = "千帆 V2 OpenAI 兼容模式；在千帆控制台创建应用并获取 API Key。",
+        ),
+        ChannelPreset(
+            key = "xfyun", label = "讯飞星火", type = ProviderType.OPENAI_COMPAT,
+            baseUrl = "https://spark-api-open.xf-yun.com/v1", authHeader = ChannelPreset.BEARER,
+            models = listOf("4.0Ultra", "generalv3.5"),
+            note = "星火 OpenAI 兼容端点；在讯飞开放平台控制台获取 API Key。",
+        ),
+        ChannelPreset(
+            key = "hunyuan", label = "腾讯混元", type = ProviderType.OPENAI_COMPAT,
+            baseUrl = "https://api.hunyuan.cloud.tencent.com/v1", authHeader = ChannelPreset.BEARER,
+            models = listOf("hunyuan-turbo", "hunyuan-lite"),
+            note = "腾讯云混元 OpenAI 兼容模式；在腾讯云控制台获取 SecretId/SecretKey 生成 Key。",
+        ),
+        ChannelPreset(
+            key = "stepfun", label = "阶跃星辰 StepFun", type = ProviderType.OPENAI_COMPAT,
+            baseUrl = "https://api.stepfun.com/v1", authHeader = ChannelPreset.BEARER,
+            models = listOf("step-2-16k", "step-1v-8k"),
+            note = "阶跃 OpenAI 兼容端点；在 stepfun 开放平台获取 API Key。",
+        ),
+        ChannelPreset(
+            key = "skywork", label = "天工 Skywork", type = ProviderType.OPENAI_COMPAT,
+            baseUrl = "https://api.tiangong.cn/v1", authHeader = ChannelPreset.BEARER,
+            models = listOf("Skywork"),
+            note = "天工 OpenAI 兼容端点；在天工开放平台获取 API Key。",
+        ),
     )
 
     /**

@@ -72,6 +72,34 @@ data class Channel(
     val pathOverrides: Map<String, String> = emptyMap(),
 
     /**
+     * 请求方法。自定义透传渠道可改成 GET / PUT / PATCH 等，默认 POST。
+     */
+    val requestMethod: String = "POST",
+
+    /**
+     * 附加查询参数。每行一条 "key=value"，会拼接到请求 URL。
+     * 适用于需要把鉴权或会话标识放进 URL 的私有接口。
+     */
+    val queryParams: String = "",
+
+    /**
+     * 请求体模板（仅自定义透传渠道生效）。
+     * 留空：请求体按 OpenAI 格式原样透传（仅做模型名映射）。
+     * 填写：用模板插值生成请求体，适配非 OpenAI 格式的私有接口。
+     * 支持变量：{{model}} 模型名（已映射）、{{messages}} 完整 messages JSON、
+     *           {{key}} API Key、{{stream}} true/false。
+     */
+    val requestTemplate: String = "",
+
+    /**
+     * 响应内容提取路径（仅自定义透传渠道生效）。
+     * 留空：上游响应原样透传给客户端。
+     * 填写：从上游 JSON 响应中按路径提取文本，组装成标准 OpenAI 响应。
+     * 示例：data.text、data[0].text、choices[0].message.content。
+     */
+    val responseContentPath: String = "",
+
+    /**
      * 模型名映射：对外暴露名 -> 上游真实模型名。
      * 例如 "gpt-4o" -> "gpt-4o-2024-08-06"。
      * 未命中的模型名原样传递。
