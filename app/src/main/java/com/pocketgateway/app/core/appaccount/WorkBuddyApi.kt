@@ -87,15 +87,29 @@ object WorkBuddyApi {
 
     // ---------- 底层请求 ----------
 
-    private fun request(ch: Channel, urlStr: String, method: String, body: String? = null): Pair<Int, String> {
-        val adapter = AdapterRegistry.get(ch)
+    /**
+     * 发请求。@param chat true 用对话头（三段式 UA + 会话头族），
+     * false 用计费/任务头（单段 UA），对齐官方 BillingHeaders 形态。
+     */
+    private fun request(
+        ch: Channel,
+        urlStr: String,
+        method: String,
+        body: String? = null,
+        chat: Boolean = false,
+    ): Pair<Int, String> {
+        val headers = if (ch.type == com.pocketgateway.app.core.model.ProviderType.APP_NATIVE) {
+            com.pocketgateway.app.core.adapter.WorkBuddyAdapter().buildHeaders(ch, chat = chat)
+        } else {
+            AdapterRegistry.get(ch).resolveHeaders(ch)
+        }
         val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = 20000
             readTimeout = 30000
-            setRequestProperty("Accept", "application/json, text/plain, */*")
-            setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            adapter.resolveHeaders(ch).forEach { (n, v) ->
+            // 不自动跟随重定向：302 通常意味着鉴权/风控问题，跟随会拿到登录页 HTML 掩盖真实原因
+            instanceFollowRedirects = false
+            headers.forEach { (n, v) ->
                 if (!n.equals("Content-Type", ignoreCase = true)) setRequestProperty(n, v)
             }
             if (method != "GET") doOutput = true
@@ -147,7 +161,7 @@ object WorkBuddyApi {
         var lastErr = "未知错误"
 
         for (url in attempts) {
-            val (code, text) = request(ch, url, "GET")
+            val (code, text) = request(ch, url, "GET", chat = true)
             if (code !in 200..299) {
                 lastErr = "HTTP $code：${text.take(160)}"
                 continue
