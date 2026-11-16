@@ -49,8 +49,24 @@ class ConfigStore(private val context: Context) {
                     AppJson.decodeFromString<GatewayConfig>(it)
                 }
             }.getOrNull()
-            _config.value = stored ?: GatewayConfig()
+            _config.value = normalize(stored ?: GatewayConfig())
         }
+    }
+
+    /**
+     * 配置迁移/归一化：
+     * APP 直连渠道的 baseUrl 一律强制为官方域名，避免历史版本存错的地址
+     * 导致 404 / 302（旧版曾把 baseUrl 存空或存成其它域）。
+     */
+    private fun normalize(cfg: GatewayConfig): GatewayConfig {
+        val fixed = cfg.channels.map { ch ->
+            if (ch.type == com.pocketgateway.app.core.model.ProviderType.APP_NATIVE) {
+                val global = ch.baseUrl.contains("workbuddy.ai", true) || ch.name.contains("国际")
+                val base = if (global) "https://www.workbuddy.ai" else "https://copilot.tencent.com"
+                if (ch.baseUrl != base) ch.copy(baseUrl = base) else ch
+            } else ch
+        }
+        return if (fixed == cfg.channels) cfg else cfg.copy(channels = fixed)
     }
 
     /** 等待初始化完成。 */

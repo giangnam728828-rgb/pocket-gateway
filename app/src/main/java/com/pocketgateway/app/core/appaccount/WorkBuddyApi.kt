@@ -65,7 +65,18 @@ data class ModelRow(
 object WorkBuddyApi {
 
     private fun isGlobal(ch: Channel): Boolean =
-        ch.baseUrl.contains("workbuddy.ai", ignoreCase = true)
+        ch.baseUrl.contains("workbuddy.ai", ignoreCase = true) || ch.name.contains("国际")
+
+    /**
+     * 解析上游根地址。
+     *
+     * **不信任渠道里保存的历史 baseUrl**（旧版本可能存了错误地址，导致 404/302）。
+     * 一律按地域强制为官方域名：
+     *  - 国内：https://copilot.tencent.com
+     *  - 国际：https://www.workbuddy.ai
+     */
+    fun resolveBase(ch: Channel): String =
+        if (isGlobal(ch)) "https://www.workbuddy.ai" else "https://copilot.tencent.com"
 
     /**
      * 计费域路径（实测口径，带真实凭证验证）：
@@ -73,7 +84,7 @@ object WorkBuddyApi {
      * /v2/billing/meter/get-user-resource  → 需凭证，正确路由
      * 故统一使用 /v2 前缀。
      */
-    private fun billingPrefix(ch: Channel): String = "/v2"
+    private fun billingPrefix(ch: Channel): String = ""
 
     private fun modelsPath(ch: Channel): String =
         if (isGlobal(ch)) "/v2/enterprises/personal/models"
@@ -153,7 +164,7 @@ object WorkBuddyApi {
      *     或 maxOutputTokens <= 256，或 tags 含 text-to-image
      */
     suspend fun fetchModels(ch: Channel): Result<List<ModelRow>> = withContext(Dispatchers.IO) {
-        val base = ch.baseUrl.trim().trimEnd('/')
+        val base = resolveBase(ch)
         if (base.isBlank()) {
             return@withContext Result.failure(IllegalStateException("Base URL 为空"))
         }
@@ -265,7 +276,7 @@ object WorkBuddyApi {
      * 用于定位 302/401 到底发生在哪个环节（凭证缺失 / 路径错误 / 风控）。
      */
     suspend fun diagnose(ch: Channel): List<ProbeResult> = withContext(Dispatchers.IO) {
-        val base = ch.baseUrl.trim().trimEnd('/')
+        val base = resolveBase(ch)
         val hasToken = ch.apiKey.isNotBlank()
         val probes = listOf(
             Triple("配置(匿名可通)", "$base/v3/config", true),
@@ -314,7 +325,7 @@ object WorkBuddyApi {
     }
 
     suspend fun fetchAccount(ch: Channel): AccountInfo? = withContext(Dispatchers.IO) {
-        val base = ch.baseUrl.trim().trimEnd('/')
+        val base = resolveBase(ch)
         val (code, text) = request(ch, base + resourcePath(ch), "GET")
         if (code !in 200..299) return@withContext null
         val data = unwrap(text) as? JsonObject ?: return@withContext null
@@ -346,7 +357,7 @@ object WorkBuddyApi {
 
     /** 能量与连续签到天数。 */
     suspend fun fetchEnergy(ch: Channel): Pair<Long?, Long?> = withContext(Dispatchers.IO) {
-        val base = ch.baseUrl.trim().trimEnd('/')
+        val base = resolveBase(ch)
         val (code, text) = request(ch, base + energyPath(ch), "GET")
         if (code !in 200..299) return@withContext (null to null)
         val data = unwrap(text) as? JsonObject ?: return@withContext (null to null)
@@ -357,7 +368,7 @@ object WorkBuddyApi {
     }
 
     suspend fun dailyCheckin(ch: Channel): Pair<Boolean, String> = withContext(Dispatchers.IO) {
-        val base = ch.baseUrl.trim().trimEnd('/')
+        val base = resolveBase(ch)
         val (code, text) = request(ch, base + checkinPath(ch), "POST", "{}")
         if (code !in 200..299) return@withContext false to "HTTP $code：${text.take(120)}"
         if (unwrap(text) == null) return@withContext false to "签到失败：${text.take(120)}"
@@ -365,7 +376,7 @@ object WorkBuddyApi {
     }
 
     suspend fun claimGift(ch: Channel): Pair<Boolean, String> = withContext(Dispatchers.IO) {
-        val base = ch.baseUrl.trim().trimEnd('/')
+        val base = resolveBase(ch)
         val (code, text) = request(ch, base + claimGiftPath(ch), "POST", "{}")
         if (code !in 200..299) return@withContext false to "HTTP $code：${text.take(120)}"
         if (unwrap(text) == null) return@withContext false to "领取失败：${text.take(120)}"
@@ -399,7 +410,7 @@ object WorkBuddyApi {
 
     /** 拉取任务列表（GET /v2/activity/growth/tasks）。 */
     suspend fun fetchTasks(ch: Channel): Pair<List<GrowthTask>, String?> = withContext(Dispatchers.IO) {
-        val base = ch.baseUrl.trim().trimEnd('/')
+        val base = resolveBase(ch)
         val (code, text) = request(ch, base + tasksPath(ch), "GET")
         if (code !in 200..299) return@withContext emptyList<GrowthTask>() to "HTTP $code：${text.take(120)}"
 
@@ -442,7 +453,7 @@ object WorkBuddyApi {
 
     /** 接取任务（POST /v2/activity/growth/tasks/accept）。 */
     suspend fun acceptTasks(ch: Channel, codes: List<String>): Pair<Boolean, String> = withContext(Dispatchers.IO) {
-        val base = ch.baseUrl.trim().trimEnd('/')
+        val base = resolveBase(ch)
         val body = codes.joinToString(",", "[", "]") { "\"$it\"" }
         val payload = "{\"task_codes\":$body}"
         val (http, text) = request(ch, base + "/v2/activity/growth/tasks/accept", "POST", payload)
@@ -452,7 +463,7 @@ object WorkBuddyApi {
 
     /** 领取单个任务奖励。 */
     suspend fun claimTask(ch: Channel, code: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
-        val base = ch.baseUrl.trim().trimEnd('/')
+        val base = resolveBase(ch)
         // 端点 A（社区实测）：路径含 task_code、无 body
         val (h1, t1) = request(ch, "$base/activity/growth/tasks/$code/claim", "POST", null)
         if (h1 in 200..299) return@withContext true to "已领取"
@@ -470,7 +481,7 @@ object WorkBuddyApi {
         val tasks = fetchTasks(ch).first
         if (tasks.isEmpty()) return@withContext Triple(0, 0, "没有可领取的任务")
 
-        val base = ch.baseUrl.trim().trimEnd('/')
+        val base = resolveBase(ch)
         var ok = 0
         var fail = 0
         for (t in tasks.filter { it.claimable }) {

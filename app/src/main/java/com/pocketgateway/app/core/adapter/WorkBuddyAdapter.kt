@@ -126,12 +126,22 @@ class WorkBuddyAdapter : ProviderAdapter {
             channel.modelMapping[model]?.let { target -> body.withString("model", target) }
         } ?: body
 
+        // 模型名纠正：客户端常传 "workbuddy" 这类别名，上游只认真实模型名。
+        // 若请求的模型不在本渠道的可用列表里，回退到列表第一个。
+        val requested = mapped.modelName() ?: ""
+        val resolved = when {
+            channel.modelMapping[requested] != null -> channel.modelMapping[requested]!!
+            channel.models.isEmpty() -> requested.ifBlank { "glm-5.2" }
+            channel.models.contains(requested) -> requested
+            else -> channel.models.first()
+        }
+
         val msgs: JsonArray = mapped.messages() ?: buildJsonArray { }
         val temp = mapped.string("temperature")
         val maxTokens = mapped.string("max_tokens")
 
         val wb = buildJsonObject {
-            put("model", JsonPrimitive(mapped.modelName() ?: "default"))
+            put("model", JsonPrimitive(resolved))
             put("messages", msgs)
             // 上游只支持流式：非流式请求会被拒（code=11101）。
             // 这里恒发 true，非流式客户端由网关聚合 SSE 后再返回。
