@@ -95,6 +95,37 @@ print(resp.choices[0].message.content)
 | POST | `/v1/chat/completions` | 聊天补全（OpenAI 兼容） |
 | POST | `/v1/embeddings` | 向量嵌入（转发给 OpenAI 兼容渠道） |
 
+## APP 账号直连（强制只能在 APP 内使用的服务）
+
+有些服务**不公开接口地址、不提供 API Key**，强制只能在自己的 APP / 网页里使用（如 WorkBuddy）。
+这类服务用「**APP 账号直连**」类型接入：网关内置该 APP 的端点、请求格式、官方客户端请求头
+与响应转换，你**只需填登录后的账号凭证**，不用填 URL 和 API Key。
+
+### 使用步骤
+
+1. 新建渠道 → 点「官方 API 预设」下拉 → 选 **WorkBuddy（APP 账号直连）**
+2. 类型自动变为「APP 账号直连」
+3. **账号凭证**一栏填：登录 APP / 网页后复制的 Cookie（或 Bearer Token）
+4. 保存 → 客户端即可用 `workbuddy` 模型名调用
+
+### 怎么拿账号凭证
+
+- **APP 抓包**：用 Reqable / HttpCanary 等抓官方 APP 的请求，复制 `Cookie` 或 `Authorization` 值
+- **网页版**：浏览器 F12 → Network → 任意请求 → Request Headers → 复制 `cookie` 整段
+
+### 内置能力
+
+| 能力 | 说明 |
+|---|---|
+| 内置端点 | 聊天/模型端点已内置，无需填 URL |
+| 官方客户端伪装 | 自动带 `User-Agent`、`X-Client-Platform`、`X-App-Version` 等头 |
+| 请求格式转换 | OpenAI 格式 → 该 APP 内部格式 |
+| 响应转换 | 该 APP 响应 → 标准 OpenAI 格式（含流式 SSE） |
+| 响应路径 | 若返回结构特殊，可填「响应内容路径」指定提取位置 |
+
+> 仅用于**你本人有权访问**的账号，仅本地/受信网络使用。
+> 不含逆向签名算法、破解风控或复用他人会话的能力。
+
 ## 自定义透传渠道（适配非 OpenAI 格式的私有接口）
 
 选「自定义透传」类型，可对接**你自己有权访问**、但请求/响应格式与 OpenAI 不同的服务（如自有网站/APP 内部接口）。三个核心配置：

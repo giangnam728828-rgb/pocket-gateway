@@ -17,6 +17,13 @@ enum class ProviderType {
 
     /** 自定义：仅做鉴权头/请求头注入 + 模型名映射，请求体原样透传。 */
     @SerialName("custom") CUSTOM,
+
+    /**
+     * APP 账号直连：用于**强制只能在自己 APP 内部使用**、不公开接口地址与 API Key 的服务
+     * （如 WorkBuddy 等）。网关内置该 APP 的端点、请求格式、签名与鉴权逻辑，
+     * 用户只需提供登录后的账号凭证（Cookie/Token），无需填写 URL 与 API Key。
+     */
+    @SerialName("app_native") APP_NATIVE,
     ;
 
     val displayName: String
@@ -25,6 +32,7 @@ enum class ProviderType {
             CLAUDE -> "Claude (Anthropic)"
             GEMINI -> "Gemini (Google)"
             CUSTOM -> "自定义透传"
+            APP_NATIVE -> "APP 账号直连"
         }
 }
 
@@ -115,6 +123,13 @@ data class Channel(
     val signTemplate: String = "",
     /** 签名密钥（HMAC 类算法使用；md5/sha 类可留空）。 */
     val signKey: String = "",
+
+    /**
+     * APP 类型标识（仅 [ProviderType.APP_NATIVE] 使用）。
+     * 决定使用哪套内置的 APP 适配逻辑，例如 "workbuddy"。
+     * 留空时按默认（WorkBuddy）适配。
+     */
+    val appKind: String = "",
 
     /**
      * 模型名映射：对外暴露名 -> 上游真实模型名。

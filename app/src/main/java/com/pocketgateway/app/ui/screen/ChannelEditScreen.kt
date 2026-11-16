@@ -64,6 +64,7 @@ fun ChannelEditDialog(
     var signAlgorithm by remember { mutableStateOf(initial.signAlgorithm) }
     var signTemplate by remember { mutableStateOf(initial.signTemplate) }
     var signKey by remember { mutableStateOf(initial.signKey) }
+    var appKind by remember { mutableStateOf(initial.appKind) }
     var methodExpanded by remember { mutableStateOf(false) }
     var signAlgoExpanded by remember { mutableStateOf(false) }
     var privateExpanded by remember { mutableStateOf(false) }
@@ -177,6 +178,33 @@ fun ChannelEditDialog(
                                 },
                             )
                         }
+                        ProviderPresets.APP_DIRECT.forEach { p ->
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text(p.label)
+                                        if (p.note.isNotBlank()) {
+                                            Text(p.note, style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                    }
+                                },
+                                onClick = {
+                                    name = p.label
+                                    type = ProviderType.APP_NATIVE
+                                    appKind = p.appKind
+                                    modelsText = p.models.joinToString("\n")
+                                    // APP 直连不需要 Base URL / 鉴权头 / 模板，清空避免干扰
+                                    baseUrl = ""
+                                    authHeader = ""
+                                    extraHeaders = ""
+                                    requestTemplate = ""
+                                    responseContentPath = ""
+                                    presetLabel = "已选择：${p.label}"
+                                    presetExpanded = false
+                                },
+                            )
+                        }
                     }
                 }
 
@@ -213,20 +241,38 @@ fun ChannelEditDialog(
                     }
                 }
 
-                OutlinedTextField(
-                    value = baseUrl, onValueChange = { baseUrl = it },
-                    label = { Text("Base URL") },
-                    placeholder = { Text("https://api.openai.com/v1") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                )
+                if (type != ProviderType.APP_NATIVE) {
+                    OutlinedTextField(
+                        value = baseUrl, onValueChange = { baseUrl = it },
+                        label = { Text("Base URL") },
+                        placeholder = { Text("https://api.openai.com/v1") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                }
 
                 OutlinedTextField(
                     value = apiKey, onValueChange = { apiKey = it },
-                    label = { Text("API Key（可留空）") },
+                    label = { Text(if (type == ProviderType.APP_NATIVE) "账号凭证（Cookie/Token）" else "API Key（可留空）") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
+                    supportingText = {
+                        if (type == ProviderType.APP_NATIVE) {
+                            Text("登录 APP 后复制 Cookie 或 Token；APP 直连无需 URL 与 API Key")
+                        }
+                    },
                 )
+
+                if (type == ProviderType.APP_NATIVE) {
+                    OutlinedTextField(
+                        value = appKind, onValueChange = { appKind = it },
+                        label = { Text("APP 类型") },
+                        placeholder = { Text("workbuddy") },
+                        supportingText = { Text("决定使用哪套内置 APP 适配逻辑") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                }
 
                 OutlinedTextField(
                     value = authHeader, onValueChange = { authHeader = it },
@@ -454,6 +500,7 @@ fun ChannelEditDialog(
                     signAlgorithm = signAlgorithm.trim(),
                     signTemplate = signTemplate,
                     signKey = signKey,
+                    appKind = appKind.trim(),
                     weight = weight.toIntOrNull()?.coerceAtLeast(1) ?: 1,
                     timeoutMs = timeout.toLongOrNull() ?: 0L,
                 )

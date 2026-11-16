@@ -55,6 +55,18 @@ data class PrivatePreset(
     val note: String = "",
 )
 
+/**
+ * APP 账号直连预设。
+ * 用于**强制只能在自己 APP 内部使用**、不公开接口地址与 API Key 的服务。
+ */
+data class AppDirectPreset(
+    val key: String,
+    val label: String,
+    val appKind: String,
+    val models: List<String> = emptyList(),
+    val note: String = "",
+)
+
 object ProviderPresets {
 
     /** 提供官方公开 API 的平台，一键配置。 */
@@ -248,6 +260,17 @@ object ProviderPresets {
         PrivatePreset(
             key = "blank", label = "空白自定义渠道", kind = "自定义",
             note = "全部留空，按需自行填写。",
+        ),
+    )
+
+    /**
+     * APP 账号直连预设。选中后自动设为"APP 账号直连"类型，用户只需填登录后的账号凭证。
+     */
+    val APP_DIRECT: List<AppDirectPreset> = listOf(
+        AppDirectPreset(
+            key = "workbuddy", label = "WorkBuddy（APP 账号直连）", appKind = "workbuddy",
+            models = listOf("workbuddy"),
+            note = "强制只能在 APP 内使用。填登录后的账号 Cookie/Token，网关自动适配端点/请求/响应，无需 URL 与 API Key。",
         ),
     )
 }
