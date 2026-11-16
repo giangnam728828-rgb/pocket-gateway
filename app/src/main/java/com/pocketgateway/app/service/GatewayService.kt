@@ -13,6 +13,7 @@ import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.pocketgateway.app.MainActivity
 import com.pocketgateway.app.PocketGatewayApp
+import com.pocketgateway.app.core.gateway.GatewayRuntime
 import com.pocketgateway.app.core.gateway.GatewayServer
 import com.pocketgateway.app.util.acquireWifiLock
 import kotlinx.coroutines.CoroutineScope
@@ -56,7 +57,10 @@ class GatewayService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_STOP -> stopSelf()
+            ACTION_STOP -> {
+                GatewayRuntime.markStopped("服务已停止")
+                stopSelf()
+            }
             else -> scope.launch { startGateway() }
         }
         return START_STICKY
@@ -69,7 +73,9 @@ class GatewayService : Service() {
         startForeground(NOTIFICATION_ID, buildNotification(cfg.port))
         acquireLocks()
 
-        server.start(cfg)
+        runCatching { server.start(cfg) }
+            .onSuccess { GatewayRuntime.markRunning(cfg.port) }
+            .onFailure { GatewayRuntime.markError("启动失败：${it.message}") }
 
         // 监听配置变化：端口变更时重启服务，保持通知同步
         scope.launch {
@@ -77,6 +83,20 @@ class GatewayService : Service() {
                 server.restartIfNeeded(newCfg)
             }
         }
+    }
+
+    override fun onDestroy() {
+        GatewayRuntime.markStopped("服务已停止")
+        runCatching { server.stop() }
+        releaseLocks()
+        super.onDestroy()
+    }
+
+    private fun releaseLocks() {
+        runCatching { wakeLock?.takeIf { it.isHeld }?.release() }
+        runCatching { wifiLock?.takeIf { it.isHeld }?.release() }
+        wakeLock = null
+        wifiLock = null
     }
 
     private fun acquireLocks() {
@@ -127,10 +147,4 @@ class GatewayService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    override fun onDestroy() {
-        server.stop()
-        wakeLock?.release()
-        wifiLock?.release()
-        super.onDestroy()
-    }
 }

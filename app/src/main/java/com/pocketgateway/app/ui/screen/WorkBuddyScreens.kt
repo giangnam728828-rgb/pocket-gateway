@@ -75,17 +75,67 @@ fun OverviewScreen(vm: GatewayViewModel) {
             }
         }
 
-        // 运行状态
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("运行状态", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        // 运行状态（醒目）
+        val running by vm.isRunning.collectAsState()
+        val statusMsg by vm.runtimeMessage.collectAsState()
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = if (running) MaterialTheme.colorScheme.primaryContainer
+                else MaterialTheme.colorScheme.surfaceVariant,
+            ),
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            if (running) "● 运行中" else "○ 已停止",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = if (running) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            if (running) "网关正在监听，客户端可以调用"
+                            else "网关未运行，客户端无法连接",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .background(
+                                if (running) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.outline,
+                                RoundedCornerShape(14.dp),
+                            )
+                            .padding(horizontal = 14.dp, vertical = 6.dp),
+                    ) {
+                        Text(
+                            if (running) "RUNNING" else "STOPPED",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = if (running) MaterialTheme.colorScheme.onPrimary
+                                    else MaterialTheme.colorScheme.surface,
+                        )
+                    }
+                }
+                if (statusMsg.isNotBlank()) {
+                    Text(statusMsg, style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 Text(
-                    if (appCh != null) "已接入：${appCh.name}" else "尚未登录 APP 账号",
-                    style = MaterialTheme.typography.bodyMedium,
+                    "已接入：${appCh?.name ?: "尚未登录账号"}",
+                    style = MaterialTheme.typography.bodySmall,
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (running) {
+                    Button(onClick = { vm.stopGateway() }) { Text("停止网关") }
+                } else {
                     Button(onClick = { vm.startGateway() }) { Text("启动网关") }
-                    OutlinedButton(onClick = { vm.stopGateway() }) { Text("停止") }
                 }
             }
         }
@@ -251,7 +301,9 @@ fun TasksScreen(vm: GatewayViewModel) {
         val c = ch ?: return
         busy = true
         scope.launch {
-            tasks = WorkBuddyApi.fetchTasks(c)
+            val (list, err) = WorkBuddyApi.fetchTasks(c)
+            tasks = list
+            if (err != null) msg = err
             val (e, s) = WorkBuddyApi.fetchEnergy(c)
             energy = e
             streak = s
@@ -283,7 +335,7 @@ fun TasksScreen(vm: GatewayViewModel) {
                         scope.launch {
                             val (ok, fail, m) = WorkBuddyApi.claimAllTasks(c)
                             msg = m
-                            tasks = WorkBuddyApi.fetchTasks(c)
+                            tasks = WorkBuddyApi.fetchTasks(c).first
                             busy = false
                         }
                     }) { Text("一键领取") }
@@ -309,14 +361,25 @@ fun TasksScreen(vm: GatewayViewModel) {
                 }
                 tasks.forEachIndexed { idx, t ->
                     if (idx > 0) HorizontalDivider()
-                    TaskItem(t) {
-                        val c = ch ?: return@TaskItem
-                        scope.launch {
-                            val (ok, m) = WorkBuddyApi.claimTask(c, t.code)
-                            msg = m
-                            tasks = WorkBuddyApi.fetchTasks(c)
-                        }
-                    }
+                    TaskItem(
+                        t = t,
+                        onClaim = {
+                            val c = ch ?: return@TaskItem
+                            scope.launch {
+                                val (ok, m) = WorkBuddyApi.claimTask(c, t.code)
+                                msg = m
+                                tasks = WorkBuddyApi.fetchTasks(c).first
+                            }
+                        },
+                        onAccept = {
+                            val c = ch ?: return@TaskItem
+                            scope.launch {
+                                val (ok, m) = WorkBuddyApi.acceptTasks(c, listOf(t.code))
+                                msg = m
+                                tasks = WorkBuddyApi.fetchTasks(c).first
+                            }
+                        },
+                    )
                 }
             }
         }
@@ -324,17 +387,22 @@ fun TasksScreen(vm: GatewayViewModel) {
 }
 
 @Composable
-private fun TaskItem(t: WorkBuddyApi.GrowthTask, onClaim: () -> Unit) {
+private fun TaskItem(
+    t: WorkBuddyApi.GrowthTask,
+    onClaim: () -> Unit,
+    onAccept: () -> Unit,
+) {
     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(t.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold,
+            Text(t.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f))
-            if (t.claimable) {
-                Button(onClick = onClaim) { Text("领取") }
+            when {
+                t.claimable -> Button(onClick = onClaim) { Text("领取") }
+                !t.accepted -> OutlinedButton(onClick = onAccept) { Text("接取") }
             }
         }
         if (t.desc.isNotBlank()) {
@@ -342,9 +410,9 @@ private fun TaskItem(t: WorkBuddyApi.GrowthTask, onClaim: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         val meta = buildList {
-            if (t.progress.isNotBlank()) add(t.progress)
-            if (t.reward.isNotBlank()) add("+${t.reward} 积分")
-            add(if (t.claimable) "可领取" else "未接取")
+            if (t.progressText.isNotBlank()) add(t.progressText)
+            if (t.credit > 0) add("+${t.credit} 积分")
+            add(t.statusText)
         }
         Text(meta.joinToString(" · "), style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant)

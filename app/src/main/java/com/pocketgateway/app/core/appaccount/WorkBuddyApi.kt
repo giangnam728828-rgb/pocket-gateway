@@ -81,8 +81,8 @@ object WorkBuddyApi {
     private fun checkinPath(ch: Channel): String = billingPrefix(ch) + "/billing/meter/daily-checkin"
     private fun claimGiftPath(ch: Channel): String = billingPrefix(ch) + "/billing/meter/claim-gift"
 
-    /** 任务域：走 chat base 无前缀（源码 task_runner 用 {chat}/activity/growth/tasks）。 */
-    private fun tasksPath(ch: Channel): String = "/activity/growth/tasks"
+    /** 任务列表：/v2/activity/growth/tasks（chat base）。 */
+    private fun tasksPath(ch: Channel): String = "/v2/activity/growth/tasks"
     private fun energyPath(ch: Channel): String = "/v2/activity/growth/energy"
 
     // ---------- 底层请求 ----------
@@ -324,70 +324,98 @@ object WorkBuddyApi {
 
     data class GrowthTask(
         val code: String,
-        val name: String,
+        val title: String,
         val desc: String = "",
-        val progress: String = "",
-        val reward: String = "",
+        val credit: Long = 0,
+        val current: Long = 0,
+        val target: Long = 0,
+        val accepted: Boolean = false,
         val claimable: Boolean = false,
-        val accepted: Boolean = true,
-    )
+        val tag: String = "",
+    ) {
+        val progressText: String
+            get() = if (target > 0) "$current/$target" else ""
 
-    /** 拉取成长任务列表。 */
-    suspend fun fetchTasks(ch: Channel): List<GrowthTask> = withContext(Dispatchers.IO) {
+        val statusText: String
+            get() = when {
+                claimable -> "可领取"
+                !accepted -> "未接取"
+                target > 0 && current >= target -> "已完成"
+                else -> "进行中"
+            }
+    }
+
+    /** 拉取任务列表（GET /v2/activity/growth/tasks）。 */
+    suspend fun fetchTasks(ch: Channel): Pair<List<GrowthTask>, String?> = withContext(Dispatchers.IO) {
         val base = ch.baseUrl.trim().trimEnd('/')
         val (code, text) = request(ch, base + tasksPath(ch), "GET")
-        if (code !in 200..299) return@withContext emptyList()
-        val data = unwrap(text) ?: return@withContext emptyList()
+        if (code !in 200..299) return@withContext emptyList<GrowthTask>() to "HTTP $code：${text.take(120)}"
+
+        val root = runCatching { AppJson.parseToJsonElement(text) }.getOrNull()
+        val data = unwrap(text)
+        if (data == null) return@withContext emptyList<GrowthTask>() to "业务码非 0：${text.take(120)}"
+
         var arr: JsonArray? = null
-        if (data is JsonArray) {
-            arr = data
-        } else if (data is JsonObject) {
+        if (data is JsonArray) arr = data
+        else if (data is JsonObject) {
             arr = (data["tasks"] as? JsonArray) ?: (data["list"] as? JsonArray)
         }
-        val list = arr ?: return@withContext emptyList()
-        list.mapNotNull { e ->
+        val list = arr ?: return@withContext emptyList<GrowthTask>() to "响应无 tasks 字段：${text.take(160)}"
+
+        val tasks = list.mapNotNull { e ->
             val o = e as? JsonObject ?: return@mapNotNull null
-            val tc = (o["task_code"] as? JsonPrimitive)?.content ?: return@mapNotNull null
-            val name = (o["name"] as? JsonPrimitive)?.content
-                ?: (o["title"] as? JsonPrimitive)?.content ?: tc
-            val status = (o["status"] as? JsonPrimitive)?.content ?: ""
-            val claimed = (o["claimed"] as? JsonPrimitive)?.content?.toBooleanStrictOrNull() ?: false
-            val finished = (o["finished"] as? JsonPrimitive)?.content?.toBooleanStrictOrNull()
-                ?: (o["completed"] as? JsonPrimitive)?.content?.toBooleanStrictOrNull()
-                ?: false
-            val reward = (o["reward"] as? JsonPrimitive)?.content
-                ?: (o["credits"] as? JsonPrimitive)?.content ?: ""
+            val tc = (o["task_code"] as? JsonPrimitive)?.content
+                ?: (o["code"] as? JsonPrimitive)?.content ?: return@mapNotNull null
+            val title = (o["title"] as? JsonPrimitive)?.content
+                ?: (o["name"] as? JsonPrimitive)?.content ?: tc
             val desc = (o["description"] as? JsonPrimitive)?.content
-                ?: (o["desc"] as? JsonPrimitive)?.content ?: ""
-            val cur = (o["progress"] as? JsonPrimitive)?.content
-                ?: (o["current"] as? JsonPrimitive)?.content ?: ""
-            val tot = (o["target"] as? JsonPrimitive)?.content
-                ?: (o["total"] as? JsonPrimitive)?.content ?: ""
-            val prog = if (cur.isNotBlank() && tot.isNotBlank()) "$cur/$tot" else cur
-            val accepted = (o["accepted"] as? JsonPrimitive)?.content?.toBooleanStrictOrNull() ?: true
+                ?: (o["task_desc"] as? JsonPrimitive)?.content ?: ""
+            val credit = (o["reward_credit"] as? JsonPrimitive)?.content?.toLongOrNull()
+                ?: (o["credit"] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0L
+            val current = (o["current"] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0L
+            val target = (o["target"] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0L
+            val acceptStatus = (o["accept_status"] as? JsonPrimitive)?.content ?: ""
+            val accepted = acceptStatus == "accepted" || acceptStatus == "accepted_rewarded"
+            val claimed = (o["claimed"] as? JsonPrimitive)?.content?.toBooleanStrictOrNull() ?: false
+            val tag = (o["tag"] as? JsonPrimitive)?.content ?: ""
             GrowthTask(
-                code = tc,
-                name = name,
-                desc = desc,
-                progress = prog,
-                reward = reward,
-                claimable = !claimed && (finished || status == "finished" || status == "completed"),
-                accepted = accepted,
+                code = tc, title = title, desc = desc, credit = credit,
+                current = current, target = target, accepted = accepted,
+                claimable = !claimed && target > 0 && current >= target,
+                tag = tag,
             )
         }
+        tasks to if (tasks.isEmpty()) "上游返回 ${list.size} 条但未解析出任务" else null
+    }
+
+    /** 接取任务（POST /v2/activity/growth/tasks/accept）。 */
+    suspend fun acceptTasks(ch: Channel, codes: List<String>): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        val base = ch.baseUrl.trim().trimEnd('/')
+        val body = codes.joinToString(",", "[", "]") { "\"$it\"" }
+        val payload = "{\"task_codes\":$body}"
+        val (http, text) = request(ch, base + "/v2/activity/growth/tasks/accept", "POST", payload)
+        if (http !in 200..299) return@withContext false to "HTTP $http：${text.take(120)}"
+        true to "已接取 ${codes.size} 个任务"
     }
 
     /** 领取单个任务奖励。 */
     suspend fun claimTask(ch: Channel, code: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         val base = ch.baseUrl.trim().trimEnd('/')
-        val (http, text) = request(ch, "$base/activity/growth/tasks/$code/claim", "POST", null)
-        if (http !in 200..299) return@withContext false to "HTTP $http：${text.take(120)}"
-        true to "已领取"
+        // 端点 A（社区实测）：路径含 task_code、无 body
+        val (h1, t1) = request(ch, "$base/activity/growth/tasks/$code/claim", "POST", null)
+        if (h1 in 200..299) return@withContext true to "已领取"
+        // 端点 B（panel 分支口径）：reward/claim + body
+        val (h2, t2) = request(
+            ch, "$base/v2/activity/growth/tasks/reward/claim", "POST",
+            "{\"task_code\":\"$code\"}",
+        )
+        if (h2 in 200..299) return@withContext true to "已领取"
+        false to "HTTP $h1/${t1.take(60)}；备选 HTTP $h2/${t2.take(60)}"
     }
 
     /** 一键领取所有可领任务奖励。返回（成功数，失败数，说明）。 */
     suspend fun claimAllTasks(ch: Channel): Triple<Int, Int, String> = withContext(Dispatchers.IO) {
-        val tasks = fetchTasks(ch)
+        val tasks = fetchTasks(ch).first
         if (tasks.isEmpty()) return@withContext Triple(0, 0, "没有可领取的任务")
 
         val base = ch.baseUrl.trim().trimEnd('/')

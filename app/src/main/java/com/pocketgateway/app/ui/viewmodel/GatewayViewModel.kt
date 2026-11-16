@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.pocketgateway.app.PocketGatewayApp
 import com.pocketgateway.app.core.model.Channel
 import com.pocketgateway.app.core.model.GatewayConfig
+import com.pocketgateway.app.core.gateway.GatewayRuntime
 import com.pocketgateway.app.core.model.RequestLog
 import com.pocketgateway.app.core.store.ConfigStore
 import com.pocketgateway.app.core.store.LogStore
@@ -26,6 +27,9 @@ class GatewayViewModel(app: Application) : AndroidViewModel(app) {
 
     val config: StateFlow<GatewayConfig> = configStore.config
     val logs: StateFlow<List<RequestLog>> = logStore.logs
+    /** 网关是否正在运行（由前台服务维护）。 */
+    val isRunning: StateFlow<Boolean> = GatewayRuntime.running
+    val runtimeMessage: StateFlow<String> = GatewayRuntime.lastMessage
     val total: StateFlow<Long> = logStore.total
     val success: StateFlow<Long> = logStore.success
 
