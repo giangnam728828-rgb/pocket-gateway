@@ -223,6 +223,16 @@ class GatewayServer(
 
         var lastError = ""
         for (channel in candidates) {
+            // APP 账号直连渠道：凭证为空时直接给出明确原因，避免上游返回 302/401 让用户困惑
+            if (channel.type == com.pocketgateway.app.core.model.ProviderType.APP_NATIVE &&
+                channel.apiKey.isBlank()
+            ) {
+                return respondError(
+                    HttpStatusCode.Unauthorized,
+                    "app_credential_missing",
+                    "账号凭证为空：请到「账号」页重新登录，或手动粘贴 accessToken。",
+                )
+            }
             val adapter = AdapterRegistry.get(channel)
             val payload = runCatching { adapter.transformRequest(channel, body, wantStream) }
                 .getOrElse {

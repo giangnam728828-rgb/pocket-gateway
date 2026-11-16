@@ -68,6 +68,8 @@ fun AppAccountScreen(vm: GatewayViewModel) {
 
     var info by remember { mutableStateOf<WorkBuddyApi.AccountInfo?>(null) }
     var loadingInfo by remember { mutableStateOf(false) }
+    var probes by remember { mutableStateOf<List<WorkBuddyApi.ProbeResult>>(emptyList()) }
+    var diagnosing by remember { mutableStateOf(false) }
 
     fun reloadInfo() {
         val c = appCh ?: return
@@ -153,8 +155,46 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                         }
                     }) { Text("一键签到") }
                 }
-                OutlinedButton(onClick = { showManual = !showManual }) {
-                    Text(if (showManual) "收起手动填写" else "手动填 Token")
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedButton(enabled = appCh != null && !diagnosing, onClick = {
+                        val c = appCh ?: return@OutlinedButton
+                        diagnosing = true
+                        scope.launch {
+                            probes = WorkBuddyApi.diagnose(c)
+                            diagnosing = false
+                        }
+                    }) { Text(if (diagnosing) "诊断中…" else "连接诊断") }
+                    OutlinedButton(onClick = { showManual = !showManual }) {
+                        Text(if (showManual) "收起手动填写" else "手动填 Token")
+                    }
+                }
+
+                // 凭证状态提示
+                if (appCh != null) {
+                    val tk = appCh.apiKey
+                    Text(
+                        if (tk.isBlank()) "⚠ 凭证为空：请在下方「手动填 Token」粘贴 accessToken"
+                        else "凭证：${tk.take(6)}…（长度 ${tk.length}）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (tk.isBlank()) MaterialTheme.colorScheme.error
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                if (probes.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        probes.forEach { p ->
+                            Text(
+                                "${p.status}  ${p.name}",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (p.status in 200..299) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.error,
+                            )
+                            Text(p.snippet, style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
                 }
                 if (showManual) {
                     OutlinedTextField(

@@ -68,10 +68,12 @@ object WorkBuddyApi {
         ch.baseUrl.contains("workbuddy.ai", ignoreCase = true)
 
     /**
-     * 计费域前缀：源码 billingMeterPaths 口径 ——
-     * CN 用 /v2/billing/meter 族，国际用 /billing/meter 族（无 v2），404 时互相回退。
+     * 计费域路径候选（实测口径）：
+     * copilot.tencent.com/billing/meter/get-user-resource → 401 JSON（正确路由）
+     * copilot.tencent.com/v2/billing/meter/...           → 401 HTML（错误路由）
+     * 故不区分地域，一律先试无 /v2，再回退带 /v2。
      */
-    private fun billingPrefix(ch: Channel): String = if (isGlobal(ch)) "" else "/v2"
+    private fun billingPrefix(ch: Channel): String = ""
 
     private fun modelsPath(ch: Channel): String =
         if (isGlobal(ch)) "/v2/enterprises/personal/models"
@@ -157,7 +159,8 @@ object WorkBuddyApi {
         }
 
         // 主路：企业模型端点（含 credits 倍率）；备用：/v3/config
-        val attempts = listOf(base + modelsPath(ch), base + "/v3/config")
+        // /v3/config 实测可匿名返回完整目录（含 agents/models/credits），优先使用
+        val attempts = listOf(base + "/v3/config", base + modelsPath(ch))
         var lastErr = "未知错误"
 
         for (url in attempts) {
@@ -251,6 +254,41 @@ object WorkBuddyApi {
         if (maxOutput in 1..256) return true
         if (tags.any { it.equals("text-to-image", ignoreCase = true) }) return true
         return false
+    }
+
+    // ---------- 诊断 ----------
+
+    data class ProbeResult(val name: String, val url: String, val status: Int, val snippet: String)
+
+    /**
+     * 连接诊断：依次请求关键端点，返回状态码与响应片段。
+     * 用于定位 302/401 到底发生在哪个环节（凭证缺失 / 路径错误 / 风控）。
+     */
+    suspend fun diagnose(ch: Channel): List<ProbeResult> = withContext(Dispatchers.IO) {
+        val base = ch.baseUrl.trim().trimEnd('/')
+        val hasToken = ch.apiKey.isNotBlank()
+        val probes = listOf(
+            Triple("配置(匿名可通)", "$base/v3/config", true),
+            Triple("积分(需凭证)", "$base/billing/meter/get-user-resource", false),
+            Triple("对话(需凭证)", "$base/v2/chat/completions", false),
+            Triple("任务(需凭证)", "$base/activity/growth/tasks", false),
+        )
+        probes.map { (name, url, anonymous) ->
+            val (code, text) = if (url.endsWith("/v2/chat/completions")) {
+                // 对话用 POST，空体会被拒但能看出鉴权层状态
+                request(ch, url, "POST", "{}", chat = true)
+            } else {
+                request(ch, url, "GET", chat = true)
+            }
+            val snippet = text.replace(Regex("\\s+"), " ").take(120)
+            val note = when {
+                !anonymous && !hasToken -> "（未填凭证，必然失败）$snippet"
+                code == 302 -> "（302 重定向=被边缘风控拦截）$snippet"
+                code == 401 -> "（401=凭证无效/过期）$snippet"
+                else -> snippet
+            }
+            ProbeResult(name, url, code, note)
+        }
     }
 
     // ---------- 积分 / 签到 ----------
