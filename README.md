@@ -121,6 +121,28 @@ print(resp.choices[0].message.content)
 **3. 请求方法 / 查询参数**
 可改成 GET / PUT / PATCH 等；查询参数每行一条 `key=value`，拼到请求 URL。
 
+**4. 签名配置（对接带签名校验的 APP / 网页接口）**
+
+签名是**渠道的持久配置**，保存后一直生效，不需要每次重新生成或重建渠道。四个字段：
+
+| 字段 | 说明 |
+|---|---|
+| 签名头名称 | 如 `X-Sign`、`sign`、`X-Signature`；留空则不签名 |
+| 签名算法 | `md5` / `sha1` / `sha256` / `hmac-md5` / `hmac-sha1` / `hmac-sha256` |
+| 签名内容模板 | 待签名字符串，支持 `{{timestamp}}` `{{nonce}}` `{{body}}` `{{model}}` `{{key}}` |
+| 签名密钥 | HMAC 类算法必填；md5/sha 类可留空 |
+
+示例（常见 APP 接口签名方式）：
+
+```
+签名头名称: X-Sign
+签名算法:   hmac-sha256
+签名内容模板: app_key={{key}}&timestamp={{timestamp}}&nonce={{nonce}}&data={{body}}
+签名密钥:   你的 appSecret
+```
+
+每次请求会自动生成新的 `{{timestamp}}` / `{{nonce}}`，对模板插值后计算签名并注入请求头。
+
 > 仅用于对接**你自己有权访问**的服务。本 App 不内置、也不提供任何第三方私有接口的逆向、签名破解或风控绕过能力。
 
 ## 常见问题

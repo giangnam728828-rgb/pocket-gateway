@@ -8,12 +8,22 @@ android {
     namespace = "com.pocketgateway.app"
     compileSdk = 35
 
+    // 固定签名：使用仓库内 keystore，保证每次构建签名一致，可直接覆盖安装
+    signingConfigs {
+        create("stable") {
+            storeFile = rootProject.file("keystore/pocketgateway.jks")
+            storePassword = "pocketgateway2024"
+            keyAlias = "pocketgateway"
+            keyPassword = "pocketgateway2024"
+        }
+    }
+
     defaultConfig {
         applicationId = "com.pocketgateway.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -22,8 +32,13 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Debug 也用固定签名，保证与 Release 一致、可覆盖安装
+            signingConfig = signingConfigs.getByName("stable")
+        }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("stable")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

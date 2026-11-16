@@ -35,6 +35,7 @@ import androidx.compose.ui.window.DialogProperties
 import com.pocketgateway.app.core.model.Channel
 import com.pocketgateway.app.core.model.ProviderPresets
 import com.pocketgateway.app.core.model.ProviderType
+import com.pocketgateway.app.util.SignUtil
 
 /**
  * 渠道编辑对话框。覆盖 Channel 的全部配置字段。
@@ -59,7 +60,12 @@ fun ChannelEditDialog(
     var queryParamsText by remember { mutableStateOf(initial.queryParams) }
     var requestTemplate by remember { mutableStateOf(initial.requestTemplate) }
     var responseContentPath by remember { mutableStateOf(initial.responseContentPath) }
+    var signHeader by remember { mutableStateOf(initial.signHeader) }
+    var signAlgorithm by remember { mutableStateOf(initial.signAlgorithm) }
+    var signTemplate by remember { mutableStateOf(initial.signTemplate) }
+    var signKey by remember { mutableStateOf(initial.signKey) }
     var methodExpanded by remember { mutableStateOf(false) }
+    var signAlgoExpanded by remember { mutableStateOf(false) }
     var weight by remember { mutableStateOf(initial.weight.toString()) }
     var timeout by remember { mutableStateOf(if (initial.timeoutMs > 0) initial.timeoutMs.toString() else "") }
     var typeExpanded by remember { mutableStateOf(false) }
@@ -306,6 +312,57 @@ fun ChannelEditDialog(
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                     )
+
+                    // 签名配置：适配带签名校验的 APP / 网页私有接口，持久保存在渠道中
+                    OutlinedTextField(
+                        value = signHeader, onValueChange = { signHeader = it },
+                        label = { Text("签名头名称（留空=不签名）") },
+                        placeholder = { Text("如：X-Sign、sign、X-Signature") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+
+                    ExposedDropdownMenuBox(
+                        expanded = signAlgoExpanded,
+                        onExpandedChange = { signAlgoExpanded = it },
+                    ) {
+                        OutlinedTextField(
+                            value = signAlgorithm.ifBlank { "none" },
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("签名算法") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(signAlgoExpanded) },
+                            modifier = Modifier.fillMaxWidth().menuAnchor(),
+                        )
+                        ExposedDropdownMenu(
+                            expanded = signAlgoExpanded,
+                            onDismissRequest = { signAlgoExpanded = false },
+                        ) {
+                            SignUtil.ALGORITHMS.forEach { a ->
+                                DropdownMenuItem(
+                                    text = { Text(a) },
+                                    onClick = { signAlgorithm = a; signAlgoExpanded = false },
+                                )
+                            }
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = signTemplate, onValueChange = { signTemplate = it },
+                        label = { Text("签名内容模板") },
+                        placeholder = { Text("app_key={{key}}&timestamp={{timestamp}}&data={{body}}") },
+                        supportingText = { Text("变量：{{timestamp}} {{nonce}} {{body}} {{model}} {{key}}") },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 3,
+                    )
+
+                    OutlinedTextField(
+                        value = signKey, onValueChange = { signKey = it },
+                        label = { Text("签名密钥（HMAC 用）") },
+                        placeholder = { Text("md5/sha 可留空；hmac 类必填") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
                 }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
@@ -342,6 +399,10 @@ fun ChannelEditDialog(
                     queryParams = queryParamsText,
                     requestTemplate = requestTemplate,
                     responseContentPath = responseContentPath.trim(),
+                    signHeader = signHeader.trim(),
+                    signAlgorithm = signAlgorithm.trim(),
+                    signTemplate = signTemplate,
+                    signKey = signKey,
                     weight = weight.toIntOrNull()?.coerceAtLeast(1) ?: 1,
                     timeoutMs = timeout.toLongOrNull() ?: 0L,
                 )

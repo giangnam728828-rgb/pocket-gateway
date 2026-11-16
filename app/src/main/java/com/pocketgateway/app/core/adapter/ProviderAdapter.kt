@@ -82,6 +82,11 @@ data class RequestPayload(
     val queryParams: Map<String, String> = emptyMap(),
     /** 请求方法，默认 POST。 */
     val method: String = "POST",
+    /**
+     * 附加请求头（如动态计算的签名头）。在 [resolveHeaders] 之后合并进最终请求，
+     * 便于适配器根据请求体等动态生成需要随请求变化的头。
+     */
+    val headers: Map<String, String> = emptyMap(),
 )
 
 /**

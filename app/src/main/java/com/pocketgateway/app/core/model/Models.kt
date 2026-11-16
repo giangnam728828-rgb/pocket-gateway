@@ -100,6 +100,23 @@ data class Channel(
     val responseContentPath: String = "",
 
     /**
+     * 签名配置（仅自定义透传渠道生效）。用于对接带签名校验的 APP / 网页私有接口。
+     * 全部留空表示不启用签名。签名作为渠道配置**持久保存**，随渠道一起存储，无需每次临时生成或重建。
+     */
+    /** 签名头名称，如 X-Sign、sign、X-Signature。 */
+    val signHeader: String = "",
+    /** 签名算法：md5 / sha1 / sha256 / hmac-md5 / hmac-sha1 / hmac-sha256 / none。 */
+    val signAlgorithm: String = "",
+    /**
+     * 签名内容模板。支持变量：{{timestamp}} {{nonce}} {{body}} {{model}} {{key}}。
+     * 先插值得到待签名字符串，再按算法计算签名。
+     * 示例：app_key={{key}}&timestamp={{timestamp}}&data={{body}}
+     */
+    val signTemplate: String = "",
+    /** 签名密钥（HMAC 类算法使用；md5/sha 类可留空）。 */
+    val signKey: String = "",
+
+    /**
      * 模型名映射：对外暴露名 -> 上游真实模型名。
      * 例如 "gpt-4o" -> "gpt-4o-2024-08-06"。
      * 未命中的模型名原样传递。

@@ -124,6 +124,11 @@ class UpstreamClient {
             if (name.equals("Content-Type", ignoreCase = true)) return@forEach
             builder.headers.append(name, value)
         }
+        // 合并适配器动态生成的请求头（如签名头）
+        payload.headers.forEach { (name, value) ->
+            if (name.equals("Content-Type", ignoreCase = true)) return@forEach
+            builder.headers.append(name, value)
+        }
     }
 
     fun close() = client.close()

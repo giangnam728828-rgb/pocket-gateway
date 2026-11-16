@@ -4,6 +4,7 @@ import com.pocketgateway.app.core.model.Channel
 import com.pocketgateway.app.core.model.ProviderType
 import com.pocketgateway.app.util.AppJson
 import com.pocketgateway.app.util.JsonPath
+import com.pocketgateway.app.util.SignUtil
 import com.pocketgateway.app.util.TemplateInterpolator
 import com.pocketgateway.app.util.modelName
 import com.pocketgateway.app.util.withString
@@ -49,11 +50,33 @@ class CustomPassthroughAdapter : ProviderAdapter {
             AppJson.encodeToString(JsonObject.serializer(), mapped)
         }
 
+        // 4. 签名：按渠道持久配置计算签名头（含动态时间戳/随机数），无需每次手动处理
+        val signHeaders = buildSignHeaders(channel, finalBody, mapped)
+
         return RequestPayload(
             body = finalBody,
             method = channel.requestMethod.ifBlank { "POST" },
             queryParams = queryParams,
+            headers = signHeaders,
         )
+    }
+
+    /**
+     * 计算签名头。签名配置持久保存在渠道中；每次请求动态生成时间戳/随机数后，
+     * 对模板插值得到的待签名字符串按算法计算，结果作为请求头注入。
+     */
+    private fun buildSignHeaders(channel: Channel, body: String, mapped: JsonObject): Map<String, String> {
+        if (channel.signHeader.isBlank() || channel.signAlgorithm.isBlank()) return emptyMap()
+        val timestamp = System.currentTimeMillis().toString()
+        val nonce = java.util.UUID.randomUUID().toString().take(8)
+        val vars = TemplateInterpolator.buildVars(mapped, channel.apiKey, false) + mapOf(
+            "timestamp" to timestamp,
+            "nonce" to nonce,
+            "body" to body,
+        )
+        val content = TemplateInterpolator.interpolate(channel.signTemplate, vars)
+        val sign = SignUtil.compute(channel.signAlgorithm, content, channel.signKey)
+        return mapOf(channel.signHeader.trim() to sign)
     }
 
     override fun transformResponse(channel: Channel, rawBody: String): String? {
