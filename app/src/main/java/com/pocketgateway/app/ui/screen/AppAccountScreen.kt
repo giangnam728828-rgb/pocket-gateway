@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -19,6 +20,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -36,6 +38,7 @@ import com.pocketgateway.app.core.appaccount.AppAccount
 import com.pocketgateway.app.core.appaccount.AppAccounts
 import com.pocketgateway.app.core.appaccount.DeviceAuthClient
 import com.pocketgateway.app.core.appaccount.LoginSession
+import com.pocketgateway.app.core.adapter.ModelFetcher
 import com.pocketgateway.app.core.appaccount.buildAppChannel
 import com.pocketgateway.app.core.model.Channel
 import com.pocketgateway.app.core.model.ProviderType
@@ -62,7 +65,12 @@ fun AppAccountScreen(vm: GatewayViewModel) {
     var manualUid by remember { mutableStateOf("") }
     var showManual by remember { mutableStateOf(false) }
 
+    // 确保网关有访问令牌：为空时自动生成，避免「未设置访问令牌」导致无法接入
+    androidx.compose.runtime.LaunchedEffect(Unit) { vm.ensureAccessToken() }
+
     val appChannels = config.channels.filter { it.type == ProviderType.APP_NATIVE }
+    // 待删除确认的渠道
+    var pendingDelete by remember { mutableStateOf<Channel?>(null) }
 
     Column(
         modifier = Modifier
@@ -159,9 +167,22 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                                     errorMsg = "尚未拿到凭证。确认已在浏览器完成授权，然后重试。"
                                 } else {
                                     val acc = selected ?: AppAccounts.ALL.first()
-                                    vm.upsertChannel(buildAppChannel(acc, cred))
-                                    status = "✅ 登录成功${if (cred.nickname.isNotBlank()) "：${cred.nickname}" else ""}，渠道已保存。"
+                                    val ch = buildAppChannel(acc, cred)
+                                    vm.upsertChannel(ch)
                                     session = null
+                                    // 登录成功后自动从上游拉取真实模型列表
+                                    status = "✅ 登录成功${if (cred.nickname.isNotBlank()) "：${cred.nickname}" else ""}，正在获取模型…"
+                                    val fetched = ModelFetcher.fetch(ch)
+                                    fetched.onSuccess { list ->
+                                        if (list.isNotEmpty()) {
+                                            vm.upsertChannel(ch.copy(models = list))
+                                            status = "✅ 登录成功${if (cred.nickname.isNotBlank()) "：${cred.nickname}" else ""}，已获取 ${list.size} 个模型。"
+                                        } else {
+                                            status = "✅ 登录成功，渠道已保存（上游未返回模型，可手动获取）。"
+                                        }
+                                    }.onFailure {
+                                        status = "✅ 登录成功，渠道已保存（模型获取失败：${it.message}）。"
+                                    }
                                 }
                             }
                         }) { Text("我已完成授权") }
@@ -239,9 +260,31 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                     channel = ch,
                     baseUrl = vm.baseUrl.value,
                     accessToken = config.accessToken,
-                    onDelete = { vm.deleteChannel(ch.id) },
+                    onDelete = { pendingDelete = ch },
+                    onRegenerateToken = { vm.regenerateAccessToken() },
+                    onModelsUpdated = { models -> vm.upsertChannel(ch.copy(models = models)) },
+                    onMessage = { status = it },
                 )
             }
+        }
+
+        // 删除二次确认，避免误触
+        pendingDelete?.let { target ->
+            AlertDialog(
+                onDismissRequest = { pendingDelete = null },
+                title = { Text("删除渠道") },
+                text = { Text("确定要删除「${target.name}」吗？删除后需重新登录才能恢复。") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        vm.deleteChannel(target.id)
+                        pendingDelete = null
+                        status = "已删除「${target.name}」"
+                    }) { Text("确定删除") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingDelete = null }) { Text("取消") }
+                },
+            )
         }
 
         Card(modifier = Modifier.fillMaxWidth()) {
@@ -266,26 +309,115 @@ private fun AccessInfoCard(
     baseUrl: String,
     accessToken: String,
     onDelete: () -> Unit,
+    onRegenerateToken: () -> String,
+    onModelsUpdated: (List<String>) -> Unit,
+    onMessage: (String) -> Unit,
 ) {
+    val scope = rememberCoroutineScope()
+    val ctx = LocalContext.current
+    var fetching by remember { mutableStateOf(false) }
+    var currentToken by remember(accessToken) { mutableStateOf(accessToken) }
+
     Card(modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            // 标题行：名称 + 可见的删除按钮
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(channel.name, fontWeight = FontWeight.Bold)
-                OutlinedButton(onClick = onDelete) { Text("移除") }
+                Text(
+                    channel.name,
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                Button(
+                    onClick = onDelete,
+                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer,
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    ),
+                ) { Text("删除") }
             }
-            InfoRow("BASE URL", baseUrl)
-            InfoRow("API KEY", accessToken.ifBlank { "（未设置访问令牌，可留空）" })
-            InfoRow("模型", channel.models.joinToString(", ").ifBlank { "glm-5.2" })
+
+            InfoRow("BASE URL", baseUrl, copyable = true)
+
+            // API KEY：已自动生成，可复制/重新生成
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    "API KEY",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    if (currentToken.isBlank()) "（正在生成…）" else currentToken,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = {
+                        val t = if (currentToken.isBlank()) onRegenerateToken() else currentToken
+                        currentToken = t
+                        copyToClipboard(ctx, t)
+                        onMessage("API KEY 已复制")
+                    }) { Text("复制 Key") }
+                    OutlinedButton(onClick = {
+                        val t = onRegenerateToken()
+                        currentToken = t
+                        copyToClipboard(ctx, t)
+                        onMessage("已重新生成 API KEY，旧 Key 立即失效")
+                    }) { Text("重新生成") }
+                }
+            }
+
+            // 模型列表：支持自动从上游获取
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    "模型（${channel.models.size}）",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    channel.models.joinToString(", ").ifBlank { "（空）" },
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        enabled = !fetching,
+                        onClick = {
+                            fetching = true
+                            scope.launch {
+                                val r = ModelFetcher.fetch(channel)
+                                fetching = false
+                                r.onSuccess { models ->
+                                    if (models.isEmpty()) {
+                                        onMessage("上游未返回模型")
+                                    } else {
+                                        onModelsUpdated(models)
+                                        onMessage("已获取 ${models.size} 个模型")
+                                    }
+                                }.onFailure { e ->
+                                    onMessage("获取失败：${e.message}")
+                                }
+                            }
+                        },
+                    ) { Text(if (fetching) "获取中…" else "自动获取模型") }
+                    OutlinedButton(onClick = {
+                        copyToClipboard(ctx, channel.models.joinToString(","))
+                        onMessage("模型列表已复制")
+                    }) { Text("复制") }
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun InfoRow(label: String, value: String) {
+private fun InfoRow(label: String, value: String, copyable: Boolean = false) {
+    val ctx = LocalContext.current
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(
@@ -294,5 +426,17 @@ private fun InfoRow(label: String, value: String) {
             fontFamily = FontFamily.Monospace,
             modifier = Modifier.fillMaxWidth(),
         )
+        if (copyable) {
+            OutlinedButton(onClick = { copyToClipboard(ctx, value) }) { Text("复制") }
+        }
+    }
+}
+
+/** 复制到系统剪贴板。 */
+private fun copyToClipboard(ctx: android.content.Context, text: String) {
+    runCatching {
+        val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+            as? android.content.ClipboardManager
+        cm?.setPrimaryClip(android.content.ClipData.newPlainText("pocketgateway", text))
     }
 }

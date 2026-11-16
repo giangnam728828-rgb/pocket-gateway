@@ -17,6 +17,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
@@ -26,12 +27,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
+import com.pocketgateway.app.core.adapter.ModelFetcher
 import com.pocketgateway.app.core.model.Channel
 import com.pocketgateway.app.core.model.ProviderPresets
 import com.pocketgateway.app.core.model.ProviderType
@@ -68,6 +71,9 @@ fun ChannelEditDialog(
     var methodExpanded by remember { mutableStateOf(false) }
     var signAlgoExpanded by remember { mutableStateOf(false) }
     var privateExpanded by remember { mutableStateOf(false) }
+    var fetchingModels by remember { mutableStateOf(false) }
+    var fetchMsg by remember { mutableStateOf<String?>(null) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     var privateLabel by remember { mutableStateOf("私有接口模板（APP/网页，一键填骨架）") }
     var weight by remember { mutableStateOf(initial.weight.toString()) }
     var timeout by remember { mutableStateOf(if (initial.timeoutMs > 0) initial.timeoutMs.toString() else "") }
@@ -337,6 +343,46 @@ fun ChannelEditDialog(
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 2,
                 )
+
+                // 自动从上游拉取模型列表
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(
+                        enabled = !fetchingModels,
+                        onClick = {
+                            fetchingModels = true
+                            fetchMsg = null
+                            scope.launch {
+                                val probe = Channel(
+                                    id = initial.id,
+                                    name = name,
+                                    type = type,
+                                    baseUrl = baseUrl.trim(),
+                                    apiKey = apiKey,
+                                    authHeader = authHeader.trim(),
+                                    extraHeaders = extraHeaders,
+                                    appKind = appKind.trim(),
+                                    pathOverrides = parsePairs(pathOverridesText),
+                                )
+                                val r = ModelFetcher.fetch(probe)
+                                fetchingModels = false
+                                r.onSuccess { list ->
+                                    if (list.isEmpty()) {
+                                        fetchMsg = "上游未返回模型"
+                                    } else {
+                                        modelsText = list.joinToString("\n")
+                                        fetchMsg = "已获取 ${list.size} 个模型"
+                                    }
+                                }.onFailure { e ->
+                                    fetchMsg = "获取失败：${e.message}"
+                                }
+                            }
+                        },
+                    ) { Text(if (fetchingModels) "获取中…" else "自动获取模型") }
+                    fetchMsg?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
 
                 OutlinedTextField(
                     value = mappingText, onValueChange = { mappingText = it },

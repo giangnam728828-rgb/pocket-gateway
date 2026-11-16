@@ -66,6 +66,29 @@ class GatewayViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearLogs() = logStore.clear()
 
+    /**
+     * 确保存在访问令牌。为空时自动生成一个 32 位十六进制令牌并持久化。
+     * 访问令牌用于客户端接入网关（Authorization: Bearer <token>）。
+     */
+    fun ensureAccessToken(): String {
+        val current = config.value.accessToken
+        if (current.isNotBlank()) return current
+        val token = java.util.UUID.randomUUID().toString().replace("-", "")
+        viewModelScope.launch {
+            configStore.update { it.copy(accessToken = token) }
+        }
+        return token
+    }
+
+    /** 重新生成访问令牌（旧令牌立即失效）。 */
+    fun regenerateAccessToken(): String {
+        val token = java.util.UUID.randomUUID().toString().replace("-", "")
+        viewModelScope.launch {
+            configStore.update { it.copy(accessToken = token) }
+        }
+        return token
+    }
+
     fun exportConfig(): String = configStore.exportJson()
 
     fun importConfig(json: String, onResult: (Boolean, String) -> Unit) = viewModelScope.launch {
