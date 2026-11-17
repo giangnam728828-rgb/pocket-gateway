@@ -389,7 +389,22 @@ object WorkBuddyApi {
             text = t
             if (c != 404) break   // 404=路由不存在，换下一个
         }
-        if (code !in 200..299) return@withContext null
+        // 资源端点取不到时，回退到已验证可用的能量接口（data.balance）
+        if (code !in 200..299) {
+            val (ec, et) = request(ch, base + "/v2/activity/growth/energy", "GET")
+            if (ec in 200..299) {
+                val eo = unwrap(et) as? JsonObject
+                val bal = (eo?.get("balance") as? JsonPrimitive)?.content?.toLongOrNull()
+                    ?: (eo?.get("energy") as? JsonPrimitive)?.content?.toLongOrNull()
+                if (bal != null) {
+                    return@withContext AccountInfo(
+                        uid = ch.appKind, creditsRemain = bal,
+                        creditsTotal = null, creditsUsed = null,
+                    )
+                }
+            }
+            return@withContext null
+        }
         val data = unwrap(text) as? JsonObject ?: return@withContext null
 
         fun num(vararg keys: String): Long? = keys.firstNotNullOfOrNull { k ->

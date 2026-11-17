@@ -126,9 +126,12 @@ class WorkBuddyAdapter : ProviderAdapter {
             channel.modelMapping[model]?.let { target -> body.withString("model", target) }
         } ?: body
 
+        // 净化请求体：剥离上游内容审核指纹（含裸数字 11128），否则返回 400 code=11128
+        val sanitized = BodySanitizer.sanitizeBody(mapped)
+
         // 模型名纠正：客户端常传 "workbuddy" 这类别名，上游只认真实模型名。
         // 若请求的模型不在本渠道的可用列表里，回退到列表第一个。
-        val requested = mapped.modelName() ?: ""
+        val requested = sanitized.modelName() ?: ""
         val resolved = when {
             channel.modelMapping[requested] != null -> channel.modelMapping[requested]!!
             channel.models.isEmpty() -> requested.ifBlank { "glm-5.2" }
@@ -136,9 +139,9 @@ class WorkBuddyAdapter : ProviderAdapter {
             else -> channel.models.first()
         }
 
-        val msgs: JsonArray = mapped.messages() ?: buildJsonArray { }
-        val temp = mapped.string("temperature")
-        val maxTokens = mapped.string("max_tokens")
+        val msgs: JsonArray = sanitized.messages() ?: buildJsonArray { }
+        val temp = sanitized.string("temperature")
+        val maxTokens = sanitized.string("max_tokens")
 
         val wb = buildJsonObject {
             put("model", JsonPrimitive(resolved))
