@@ -37,17 +37,27 @@ jobs:
           echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
 
       # 从 Secrets 还原签名 keystore（仓库中不存放密钥文件与密码）
+      # 注意：if 条件里不能直接引用 secrets，改为在脚本内判断环境变量
       - name: Restore signing keystore
-        if: ${{ secrets.SIGNING_KEYSTORE_BASE64 != '' }}
+        env:
+          KEYSTORE_B64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+          STORE_PASS: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::warning::未配置签名 Secrets，本次构建将使用默认 debug 签名"
+            exit 0
+          fi
           mkdir -p keystore
-          echo "${{ secrets.SIGNING_KEYSTORE_BASE64 }}" | base64 -d > keystore/pocketgateway.jks
-          cat > keystore.properties <<EOF2
-          storeFile=keystore/pocketgateway.jks
-          storePassword=${{ secrets.SIGNING_STORE_PASSWORD }}
-          keyAlias=${{ secrets.SIGNING_KEY_ALIAS }}
-          keyPassword=${{ secrets.SIGNING_KEY_PASSWORD }}
-          EOF2
+          printf '%s' "$KEYSTORE_B64" | base64 -d > keystore/pocketgateway.jks
+          {
+            echo "storeFile=keystore/pocketgateway.jks"
+            echo "storePassword=$STORE_PASS"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEY_PASS"
+          } > keystore.properties
+          echo "签名 keystore 已还原"
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
