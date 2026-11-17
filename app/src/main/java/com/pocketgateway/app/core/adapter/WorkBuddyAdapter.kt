@@ -71,14 +71,13 @@ class WorkBuddyAdapter : ProviderAdapter {
                     Charsets.UTF_8
                 )
                 val obj = Json.parseToJsonElement(json) as? JsonObject
-                var found: String? = null
-                if (obj != null) {
-                    for (k in listOf("uid", "userId", "user_id", "sub", "uin")) {
-                        val v = (obj[k] as? JsonPrimitive)?.content
-                        if (!v.isNullOrBlank() && (v.all { c -> c.isDigit() } || v.length >= 8)) { found = v; break }
+                // 用 firstOrNull 代替 for+break（lambda 内 break 无法编译）
+                obj?.let { o ->
+                    listOf("uid", "userId", "user_id", "sub", "uin").firstNotNullOfOrNull { k ->
+                        val v = (o[k] as? JsonPrimitive)?.content
+                        v?.takeIf { !it.isBlank() && (it.all { c -> c.isDigit() } || it.length >= 8) }
                     }
                 }
-                found
             }.getOrNull()
             if (!hit.isNullOrBlank()) return hit
         }
