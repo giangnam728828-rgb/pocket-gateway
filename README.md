@@ -146,8 +146,10 @@ App 底部导航栏有独立的 **「APP 账号」** 页面，用**设备授权�
 
 ### 关于 11128「渠道校验失败」
 
-上游要求**会话头族恒在**，尤其是 `X-Conversation-ID`。缺这个头会被判定为非官方客户端，
-返回 `400 code=11128 / 11-128`。本网关已自动注入完整会话头族：
+> **状态：待验证假设**。代码只能证明网关发送了这些请求头，
+> 尚不能证明它们是服务端渠道校验的充分条件。请以实际错误体为准判断。
+
+网关会注入完整会话头族（`X-Conversation-ID` 与请求体 `conversationId` **使用同一个值**）：
 
 ```
 X-Conversation-ID          （会话级，必发）
@@ -158,6 +160,21 @@ X-B3-TraceId / X-B3-SpanId / X-B3-Sampled
 ```
 
 同时注入官方桌面端身份头：`X-Agent-Purpose`、`X-IDE-Name/Type/Version`、`X-Product`。
+
+### 请求体净化（默认关闭）
+
+「渠道设置 → 请求体净化」开关默认**关闭**。开启后会按开源实现 workbuddy2api 的
+`sanitize.go` 规则剥离上游内容审核指纹（`x-anthropic-billing-header`、`cc_*` 键值、
+Claude Code / Codex 身份句、以及裸数字 `11128`）。
+
+> 这些规则**未经本机实测验证**，且会改写用户消息原文，故默认不启用。
+> 仅在明确遇到 11128 且确认与文本内容相关时，再按需开启。
+
+### 安全说明（签名密钥）
+
+签名 keystore 与密码**不入库**，由 GitHub Actions Secrets 注入：
+`SIGNING_KEYSTORE_BASE64` / `SIGNING_STORE_PASSWORD` / `SIGNING_KEY_ALIAS` / `SIGNING_KEY_PASSWORD`。
+本地构建请自建 `keystore.properties`（已在 .gitignore）。
 
 ### 备用：手动填 Token
 
