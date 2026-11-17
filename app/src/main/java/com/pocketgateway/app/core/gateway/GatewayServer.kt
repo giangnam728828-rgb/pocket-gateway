@@ -241,6 +241,41 @@ class GatewayServer(
                 } ?: continue
             val timeout = if (channel.timeoutMs > 0) channel.timeoutMs else cfg.defaultTimeoutMs
 
+            // APP 直连渠道：用 HTTP/1.1 直连（官方实现禁用 h2，走 h2 会被边缘 302）
+            if (channel.type == com.pocketgateway.app.core.model.ProviderType.APP_NATIVE) {
+                try {
+                    val (st, text) = com.pocketgateway.app.core.appaccount.WorkBuddyApi
+                        .chatStream(channel, payload.body, timeout)
+                    val ok = st in 200..299
+                    log(cfg, model, channel, st, ok, System.currentTimeMillis() - start,
+                        if (ok) "OK" else truncate(text, 200), wantStream)
+                    response.header("X-PocketGateway-Channel", channel.name)
+                    if (!ok) {
+                        lastError = "HTTP $st: ${truncate(text, 160)}"
+                        response.status(HttpStatusCode.fromValue(st.coerceIn(400, 599)))
+                        respondText(text, ContentType.Application.Json)
+                        return
+                    }
+                    if (wantStream) {
+                        // 上游本身就是 SSE，直接透传给客户端
+                        response.header(HttpHeaders.CacheControl, "no-cache")
+                        response.header("X-Accel-Buffering", "no")
+                        respondText(text, ContentType.Text.EventStream)
+                    } else {
+                        val json = com.pocketgateway.app.core.adapter.WorkBuddyAdapter
+                            .aggregateSse(text, model ?: "workbuddy")
+                            ?: adapter.transformResponse(channel, text)
+                            ?: text
+                        respondText(json, ContentType.Application.Json)
+                    }
+                    return
+                } catch (e: Exception) {
+                    lastError = e.message ?: e::class.java.simpleName
+                    log(cfg, model, channel, 0, false, System.currentTimeMillis() - start, lastError, wantStream)
+                    continue
+                }
+            }
+
             try {
                 if (wantStream) {
                     forwardStream(channel, adapter, payload, timeout, model, start)

@@ -267,7 +267,55 @@ object WorkBuddyApi {
         return false
     }
 
+    // ---------- 对话（HTTP/1.1 直连，绕开 Ktor 的 h2） ----------
+
+    /**
+     * 发起对话请求（流式），返回 (状态码, 原始 SSE 文本)。
+     *
+     * 关键：使用 HttpURLConnection（HTTP/1.1），不用 Ktor。
+     * 官方实现明确禁用 h2（空 TLSNextProto），握手走 HTTP/2 会被边缘判定异常并 302。
+     */
+    suspend fun chatStream(ch: Channel, requestBody: String, timeoutMs: Long = 120_000): Pair<Int, String> =
+        withContext(Dispatchers.IO) {
+            val base = resolveBase(ch)
+            val url = base + "/v2/chat/completions"
+            val headers = com.pocketgateway.app.core.adapter.WorkBuddyAdapter()
+                .buildHeaders(ch, chat = true)
+
+            var conn: HttpURLConnection? = null
+            try {
+                conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 20000
+                    readTimeout = timeoutMs.toInt().coerceIn(10_000, 300_000)
+                    instanceFollowRedirects = false   // 不跟随，暴露真实 302
+                    useCaches = false
+                    setRequestProperty("Connection", "keep-alive")
+                    setRequestProperty("Accept-Encoding", "identity") // 避免 gzip 干扰 SSE
+                    headers.forEach { (n, v) ->
+                        if (!n.equals("Content-Type", ignoreCase = true)) setRequestProperty(n, v)
+                    }
+                    doOutput = true
+                }
+                conn.outputStream.use { it.write(requestBody.toByteArray(Charsets.UTF_8)) }
+
+                val code = conn.responseCode
+                val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                val text = stream?.let {
+                    BufferedReader(InputStreamReader(it, Charsets.UTF_8)).use { r -> r.readText() }
+                } ?: ""
+                code to text
+            } catch (e: Exception) {
+                -1 to (e.message ?: "网络错误")
+            } finally {
+                runCatching { conn?.disconnect() }
+            }
+        }
+
     // ---------- 诊断 ----------
+
+    private const val CHAT_PROBE_BODY =
+        """{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}],"stream":true}"""
 
     data class ProbeResult(val name: String, val url: String, val status: Int, val snippet: String)
 
@@ -286,8 +334,8 @@ object WorkBuddyApi {
         )
         probes.map { (name, url, anonymous) ->
             val (code, text) = if (url.endsWith("/v2/chat/completions")) {
-                // 对话用 POST，空体会被拒但能看出鉴权层状态
-                request(ch, url, "POST", "{}", chat = true)
+                // 用真实流式请求探测，才能反映客户端实际会遇到的错误
+                chatStream(ch, CHAT_PROBE_BODY, 30_000)
             } else {
                 request(ch, url, "GET", chat = true)
             }
@@ -324,9 +372,23 @@ object WorkBuddyApi {
             }
     }
 
+    /** 积分端点候选：运行时逐个尝试，取第一个非 404 的（不同环境路由不同）。 */
+    private val resourceCandidates = listOf(
+        "/billing/meter/get-user-resource",
+        "/v2/billing/meter/get-user-resource",
+        "/billing/meter/user-resource",
+    )
+
     suspend fun fetchAccount(ch: Channel): AccountInfo? = withContext(Dispatchers.IO) {
         val base = resolveBase(ch)
-        val (code, text) = request(ch, base + resourcePath(ch), "GET")
+        var code = 0
+        var text = ""
+        for (p in resourceCandidates) {
+            val (c, t) = request(ch, base + p, "GET")
+            code = c
+            text = t
+            if (c != 404) break   // 404=路由不存在，换下一个
+        }
         if (code !in 200..299) return@withContext null
         val data = unwrap(text) as? JsonObject ?: return@withContext null
 
