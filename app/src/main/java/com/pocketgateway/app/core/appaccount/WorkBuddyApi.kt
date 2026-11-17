@@ -326,6 +326,19 @@ object WorkBuddyApi {
     private const val CHAT_PROBE_BODY =
         """{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}],"stream":true}"""
 
+    /**
+     * 构造对比用探针体：模拟真实客户端（Claude Code 类）的 system prompt，
+     * 其中包含上游可能按逐字匹配拦截的身份句。
+     * @param sanitize true 时套用 BodySanitizer，用于对照验证净化是否有效。
+     */
+    private fun sanitizedProbe(sanitize: Boolean): String {
+        val raw = """{"model":"glm-5.2","messages":[{"role":"system","content":"You are Claude Code, Anthropic's official CLI tool for Claude."},{"role":"user","content":"hi"}],"stream":true}"""
+        if (!sanitize) return raw
+        val obj = AppJson.parseToJsonElement(raw) as JsonObject
+        val cleaned = com.pocketgateway.app.core.adapter.BodySanitizer.sanitizeBody(obj)
+        return AppJson.encodeToString(JsonObject.serializer(), cleaned)
+    }
+
     data class ProbeResult(val name: String, val url: String, val status: Int, val snippet: String)
 
     /**
@@ -341,15 +354,17 @@ object WorkBuddyApi {
             Triple("积分②", "$base/v2/billing/meter/get-user-resource", false),
             Triple("积分③", "$base/billing/meter/user-resource", false),
             Triple("能量", "$base/v2/activity/growth/energy", false),
-            Triple("对话(需凭证)", "$base/v2/chat/completions", false),
+            Triple("对话·最小请求", "$base/v2/chat/completions", false),
+            Triple("对话·带Claude身份句(原始)", "PROBE_RAW", false),
+            Triple("对话·带Claude身份句(净化)", "PROBE_SANITIZED", false),
             Triple("任务(需凭证)", "$base/activity/growth/tasks", false),
         )
         probes.map { (name, url, anonymous) ->
-            val (code, text) = if (url.endsWith("/v2/chat/completions")) {
-                // 用真实流式请求探测，才能反映客户端实际会遇到的错误
-                chatStream(ch, CHAT_PROBE_BODY, 30_000)
-            } else {
-                request(ch, url, "GET", chat = true)
+            val (code, text) = when {
+                url == "PROBE_RAW" -> chatStream(ch, sanitizedProbe(sanitize = false), 30_000)
+                url == "PROBE_SANITIZED" -> chatStream(ch, sanitizedProbe(sanitize = true), 30_000)
+                url.endsWith("/v2/chat/completions") -> chatStream(ch, CHAT_PROBE_BODY, 30_000)
+                else -> request(ch, url, "GET", chat = true)
             }
             val snippet = text.replace(Regex("\\s+"), " ").take(120)
             val note = when {

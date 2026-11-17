@@ -138,7 +138,7 @@ data class Channel(
      * 内容审核。但这些规则**未经本机实测验证**，且会改写用户消息原文，
      * 故默认关闭，由用户在明确需要时自行开启。
      */
-    val sanitizeEnabled: Boolean = false,
+    val sanitizeEnabled: Boolean = true,
 
     /**
      * 模型名映射：对外暴露名 -> 上游真实模型名。

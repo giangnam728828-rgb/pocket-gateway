@@ -20,7 +20,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.Switch
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -68,6 +70,7 @@ fun ChannelEditDialog(
     var signTemplate by remember { mutableStateOf(initial.signTemplate) }
     var signKey by remember { mutableStateOf(initial.signKey) }
     var appKind by remember { mutableStateOf(initial.appKind) }
+    var sanitizeEnabled by remember { mutableStateOf(initial.sanitizeEnabled) }
     var methodExpanded by remember { mutableStateOf(false) }
     var signAlgoExpanded by remember { mutableStateOf(false) }
     var privateExpanded by remember { mutableStateOf(false) }
@@ -278,6 +281,22 @@ fun ChannelEditDialog(
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                     )
+                    // 请求体净化开关（会改写消息原文中的特定字符串）
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("请求体净化", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "剥离可能触发上游拦截的指纹字符串（会改写消息原文）",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(checked = sanitizeEnabled, onCheckedChange = { sanitizeEnabled = it })
+                    }
                 }
 
                 OutlinedTextField(
@@ -361,6 +380,7 @@ fun ChannelEditDialog(
                                     authHeader = authHeader.trim(),
                                     extraHeaders = extraHeaders,
                                     appKind = appKind.trim(),
+                    sanitizeEnabled = sanitizeEnabled,
                                     pathOverrides = parsePairs(pathOverridesText),
                                 )
                                 val r = ModelFetcher.fetch(probe)
@@ -547,6 +567,7 @@ fun ChannelEditDialog(
                     signTemplate = signTemplate,
                     signKey = signKey,
                     appKind = appKind.trim(),
+                    sanitizeEnabled = sanitizeEnabled,
                     weight = weight.toIntOrNull()?.coerceAtLeast(1) ?: 1,
                     timeoutMs = timeout.toLongOrNull() ?: 0L,
                 )

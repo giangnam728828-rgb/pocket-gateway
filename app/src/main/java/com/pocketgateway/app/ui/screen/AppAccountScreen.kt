@@ -305,7 +305,8 @@ private fun AccountCard(
             val total = info?.creditsTotal
             Text(
                 if (loading) "积分加载中…"
-                else if (remain != null) "剩余 $remain / ${total ?: "?"} 积分"
+                else if (remain != null && total != null && total > 0) "剩余 $remain / $total 积分"
+                else if (remain != null) "剩余 $remain 积分"
                 else "积分未获取",
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold,
