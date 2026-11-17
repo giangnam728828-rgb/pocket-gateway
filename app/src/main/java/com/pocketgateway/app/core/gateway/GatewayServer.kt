@@ -244,9 +244,20 @@ class GatewayServer(
             // APP 直连渠道：用 HTTP/1.1 直连（官方实现禁用 h2，走 h2 会被边缘 302）
             if (channel.type == com.pocketgateway.app.core.model.ProviderType.APP_NATIVE) {
                 try {
+                    // 批次B：记录转换后的请求摘要（脱敏）与上游状态码，便于定位
+                    val reqDigest = buildString {
+                        append("model=").append(model ?: "?")
+                        append(" bodyLen=").append(payload.body.length)
+                        append(" bodyHead=").append(
+                            payload.body.take(160).replace(Regex("\\s+"), " ")
+                        )
+                    }
                     val (st, text) = com.pocketgateway.app.core.appaccount.WorkBuddyApi
                         .chatStream(channel, payload.body, timeout)
                     val ok = st in 200..299
+                    val respHead = text.take(200).replace(Regex("\\s+"), " ")
+                    log(cfg, model, channel, st, ok, System.currentTimeMillis() - start,
+                        "REQ[$reqDigest] RESP[$respHead]", wantStream)
                     log(cfg, model, channel, st, ok, System.currentTimeMillis() - start,
                         if (ok) "OK" else truncate(text, 200), wantStream)
                     response.header("X-PocketGateway-Channel", channel.name)

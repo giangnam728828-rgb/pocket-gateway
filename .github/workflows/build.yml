@@ -36,6 +36,19 @@ jobs:
           "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
           echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
 
+      # 从 Secrets 还原签名 keystore（仓库中不存放密钥文件与密码）
+      - name: Restore signing keystore
+        if: ${{ secrets.SIGNING_KEYSTORE_BASE64 != '' }}
+        run: |
+          mkdir -p keystore
+          echo "${{ secrets.SIGNING_KEYSTORE_BASE64 }}" | base64 -d > keystore/pocketgateway.jks
+          cat > keystore.properties <<EOF2
+          storeFile=keystore/pocketgateway.jks
+          storePassword=${{ secrets.SIGNING_STORE_PASSWORD }}
+          keyAlias=${{ secrets.SIGNING_KEY_ALIAS }}
+          keyPassword=${{ secrets.SIGNING_KEY_PASSWORD }}
+          EOF2
+
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 

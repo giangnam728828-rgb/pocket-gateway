@@ -53,7 +53,12 @@ class WorkBuddyAdapter : ProviderAdapter {
      * @param chat true = 对话/模型路径（三段式 UA + 会话头族）；
      *             false = 计费/签到/任务路径（单段 UA，不带会话头族）
      */
-    fun buildHeaders(channel: Channel, chat: Boolean): List<Pair<String, String>> {
+    fun buildHeaders(
+        channel: Channel,
+        chat: Boolean,
+        convId: String = newHexId(),
+        convReqId: String = newHexId(),
+    ): List<Pair<String, String>> {
         val token = channel.apiKey.trim()
         val uid = channel.appKind.trim()
         val global = channel.baseUrl.contains("workbuddy.ai", ignoreCase = true)
@@ -103,10 +108,9 @@ class WorkBuddyAdapter : ProviderAdapter {
             h.add("X-IDE-Version" to CLIENT_VER)
             h.add("X-Product" to "WorkBuddy")
 
-            // 会话头族：渠道校验要求 X-Conversation-ID 恒在
-            val convReqId = newHexId()
+            // 会话头族：X-Conversation-ID 与 body 的 conversationId 保持同一个值
             val msgId = newHexId()
-            h.add("X-Conversation-ID" to newHexId())
+            h.add("X-Conversation-ID" to convId)
             h.add("X-Conversation-Request-ID" to convReqId)
             h.add("X-Conversation-Message-ID" to msgId)
             h.add("X-Request-ID" to msgId)
@@ -126,8 +130,9 @@ class WorkBuddyAdapter : ProviderAdapter {
             channel.modelMapping[model]?.let { target -> body.withString("model", target) }
         } ?: body
 
-        // 净化请求体：剥离上游内容审核指纹（含裸数字 11128），否则返回 400 code=11128
-        val sanitized = BodySanitizer.sanitizeBody(mapped)
+        // 请求体净化：默认关闭（规则未经实测验证，且会改写用户原文）。
+        // 仅在渠道显式开启 sanitizeEnabled 时生效。
+        val sanitized = if (channel.sanitizeEnabled) BodySanitizer.sanitizeBody(mapped) else mapped
 
         // 模型名纠正：客户端常传 "workbuddy" 这类别名，上游只认真实模型名。
         // 若请求的模型不在本渠道的可用列表里，回退到列表第一个。
@@ -143,6 +148,7 @@ class WorkBuddyAdapter : ProviderAdapter {
         val temp = sanitized.string("temperature")
         val maxTokens = sanitized.string("max_tokens")
 
+        val convId = newHexId()
         val wb = buildJsonObject {
             put("model", JsonPrimitive(resolved))
             put("messages", msgs)
@@ -151,7 +157,8 @@ class WorkBuddyAdapter : ProviderAdapter {
             put("stream", JsonPrimitive(true))
             if (temp != null) put("temperature", JsonPrimitive(temp))
             if (maxTokens != null) put("max_tokens", JsonPrimitive(maxTokens))
-            put("conversationId", JsonPrimitive(newHexId()))
+            // 与请求头 X-Conversation-ID 使用同一个会话 ID
+            put("conversationId", JsonPrimitive(convId))
         }
 
         return RequestPayload(body = AppJson.encodeToString(JsonObject.serializer(), wb))

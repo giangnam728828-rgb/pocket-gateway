@@ -132,6 +132,15 @@ data class Channel(
     val appKind: String = "",
 
     /**
+     * 是否启用请求体指纹净化（默认关闭）。
+     *
+     * 净化规则源自开源实现 workbuddy2api 的 sanitize.go，用于规避上游按逐字匹配的
+     * 内容审核。但这些规则**未经本机实测验证**，且会改写用户消息原文，
+     * 故默认关闭，由用户在明确需要时自行开启。
+     */
+    val sanitizeEnabled: Boolean = false,
+
+    /**
      * 模型名映射：对外暴露名 -> 上游真实模型名。
      * 例如 "gpt-4o" -> "gpt-4o-2024-08-06"。
      * 未命中的模型名原样传递。

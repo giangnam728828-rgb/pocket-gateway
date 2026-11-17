@@ -122,6 +122,8 @@ object WorkBuddyApi {
             readTimeout = 30000
             // 不自动跟随重定向：302 通常意味着鉴权/风控问题，跟随会拿到登录页 HTML 掩盖真实原因
             instanceFollowRedirects = false
+            // 显式设置 Content-Type（适配器返回的 Content-Type 被过滤后必须补回）
+            setRequestProperty("Content-Type", "application/json; charset=utf-8")
             headers.forEach { (n, v) ->
                 if (!n.equals("Content-Type", ignoreCase = true)) setRequestProperty(n, v)
             }
@@ -279,8 +281,13 @@ object WorkBuddyApi {
         withContext(Dispatchers.IO) {
             val base = resolveBase(ch)
             val url = base + "/v2/chat/completions"
+            // 从请求体里取出 conversationId，保证 Header 与 body 一致（协议一致性）
+            val convId = runCatching {
+                val o = AppJson.parseToJsonElement(requestBody) as? JsonObject
+                (o?.get("conversationId") as? JsonPrimitive)?.content
+            }.getOrNull()?.takeIf { it.isNotBlank() }
             val headers = com.pocketgateway.app.core.adapter.WorkBuddyAdapter()
-                .buildHeaders(ch, chat = true)
+                .buildHeaders(ch, chat = true, convId = convId ?: com.pocketgateway.app.core.adapter.WorkBuddyAdapter.newHexId())
 
             var conn: HttpURLConnection? = null
             try {
@@ -292,6 +299,8 @@ object WorkBuddyApi {
                     useCaches = false
                     setRequestProperty("Connection", "keep-alive")
                     setRequestProperty("Accept-Encoding", "identity") // 避免 gzip 干扰 SSE
+                    // 显式设置 Content-Type（之前被过滤掉且未补回，属于缺陷）
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
                     headers.forEach { (n, v) ->
                         if (!n.equals("Content-Type", ignoreCase = true)) setRequestProperty(n, v)
                     }
@@ -328,7 +337,10 @@ object WorkBuddyApi {
         val hasToken = ch.apiKey.isNotBlank()
         val probes = listOf(
             Triple("配置(匿名可通)", "$base/v3/config", true),
-            Triple("积分(需凭证)", "$base/billing/meter/get-user-resource", false),
+            Triple("积分①", "$base/billing/meter/get-user-resource", false),
+            Triple("积分②", "$base/v2/billing/meter/get-user-resource", false),
+            Triple("积分③", "$base/billing/meter/user-resource", false),
+            Triple("能量", "$base/v2/activity/growth/energy", false),
             Triple("对话(需凭证)", "$base/v2/chat/completions", false),
             Triple("任务(需凭证)", "$base/activity/growth/tasks", false),
         )

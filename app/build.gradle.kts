@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -8,13 +10,28 @@ android {
     namespace = "com.pocketgateway.app"
     compileSdk = 35
 
-    // 固定签名：使用仓库内 keystore，保证每次构建签名一致，可直接覆盖安装
+    // 签名配置：优先读取环境变量（CI 用 Secrets 注入），
+    // 其次读本地 keystore.properties（已 gitignore）。
+    // 仓库中不存放密钥文件与明文密码。
     signingConfigs {
         create("stable") {
-            storeFile = rootProject.file("keystore/pocketgateway.jks")
-            storePassword = "pocketgateway2024"
-            keyAlias = "pocketgateway"
-            keyPassword = "pocketgateway2024"
+            val propsFile = rootProject.file("keystore.properties")
+            val props = Properties()
+            if (propsFile.exists()) propsFile.inputStream().use { props.load(it) }
+
+            val storePath = System.getenv("SIGNING_STORE_FILE")
+                ?: props.getProperty("storeFile")
+                ?: "keystore/pocketgateway.jks"
+            val sf = rootProject.file(storePath)
+            if (sf.exists()) {
+                storeFile = sf
+                storePassword = System.getenv("SIGNING_STORE_PASSWORD")
+                    ?: props.getProperty("storePassword") ?: ""
+                keyAlias = System.getenv("SIGNING_KEY_ALIAS")
+                    ?: props.getProperty("keyAlias") ?: "pocketgateway"
+                keyPassword = System.getenv("SIGNING_KEY_PASSWORD")
+                    ?: props.getProperty("keyPassword") ?: ""
+            }
         }
     }
 
@@ -22,8 +39,8 @@ android {
         applicationId = "com.pocketgateway.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 17
-        versionName = "0.17.0"
+        versionCode = 18
+        versionName = "0.18.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -33,12 +50,16 @@ android {
 
     buildTypes {
         debug {
-            // Debug 也用固定签名，保证与 Release 一致、可覆盖安装
-            signingConfig = signingConfigs.getByName("stable")
+            // 有可用签名配置时用固定签名（保证可覆盖安装），否则回退默认 debug 签名
+            signingConfigs.getByName("stable").storeFile?.let {
+                signingConfig = signingConfigs.getByName("stable")
+            }
         }
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("stable")
+            signingConfigs.getByName("stable").storeFile?.let {
+                signingConfig = signingConfigs.getByName("stable")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
