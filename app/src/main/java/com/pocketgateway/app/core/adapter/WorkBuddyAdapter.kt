@@ -49,6 +49,44 @@ class WorkBuddyAdapter : ProviderAdapter {
         buildHeaders(channel, chat = true)
 
     /**
+     * 解析真实用户 ID。
+     *
+     * 历史缺陷：直接取 channel.appKind 当 uid，但 appKind 是**适配器类型标识**
+     * （如 "workbuddy"），不是用户 ID。拿它派生 X-Machine-ID / X-Session-ID /
+     * X-User-Id 会让设备指纹完全错误，上游渠道校验必然失败（11128）。
+     *
+     * 现在优先从 accessToken（JWT）payload 解析真实 uid，解析不到时才把
+     * appKind 当兜底（且必须在它不像类型名时）。
+     */
+    private fun resolveUid(channel: Channel): String {
+        val token = channel.apiKey.trim()
+        if (token.count { it == '.' } >= 2) {
+            val hit = runCatching {
+                val payload = token.split('.')[1]
+                val json = String(
+                    android.util.Base64.decode(
+                        payload,
+                        android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING or android.util.Base64.NO_WRAP
+                    ),
+                    Charsets.UTF_8
+                )
+                val obj = Json.parseToJsonElement(json) as? JsonObject
+                var found: String? = null
+                if (obj != null) {
+                    for (k in listOf("uid", "userId", "user_id", "sub", "uin")) {
+                        val v = (obj[k] as? JsonPrimitive)?.content
+                        if (!v.isNullOrBlank() && (v.all { c -> c.isDigit() } || v.length >= 8)) { found = v; break }
+                    }
+                }
+                found
+            }.getOrNull()
+            if (!hit.isNullOrBlank()) return hit
+        }
+        val kind = channel.appKind.trim()
+        return if (kind.isNotEmpty() && kind.lowercase() !in KNOWN_APP_KINDS) kind else ""
+    }
+
+    /**
      * 构造出站请求头。
      * @param chat true = 对话/模型路径（三段式 UA + 会话头族）；
      *             false = 计费/签到/任务路径（单段 UA，不带会话头族）
@@ -60,7 +98,7 @@ class WorkBuddyAdapter : ProviderAdapter {
         convReqId: String = newHexId(),
     ): List<Pair<String, String>> {
         val token = channel.apiKey.trim()
-        val uid = channel.appKind.trim()
+        val uid = resolveUid(channel)
         val global = channel.baseUrl.contains("workbuddy.ai", ignoreCase = true)
         val origin = if (global) GLOBAL_ORIGIN else CN_ORIGIN
         val platform = if (global) "WorkBuddy AI" else "WorkBuddy"
@@ -81,6 +119,12 @@ class WorkBuddyAdapter : ProviderAdapter {
         // 风控闸门头：官方所有 API 必带，缺失会导致边缘 302/拒收
         h.add("X-CodeBuddy-Request" to "1")
         h.add("Accept-Language" to if (global) "en-US" else "zh-CN")
+        // 官方客户端身份头（README 声称已内置，历史版本实际缺失）：
+        // 上游渠道校验会比对平台与版本，缺失或错配会被判为非官方客户端（11128）
+        h.add("X-Client-Platform" to if (global) "workbuddy-web" else "codebuddy-web")
+        h.add("X-App-Version" to CLIENT_VER)
+        h.add("X-Client-Version" to CLIENT_VER)
+        h.add("X-Client-Type" to "web")
 
         // 账号级稳定设备标识（uid 为空则不注入，与官方一致）
         if (uid.isNotEmpty()) {
@@ -90,7 +134,9 @@ class WorkBuddyAdapter : ProviderAdapter {
 
         // —— 鉴权 ——
         if (token.isNotEmpty()) h.add("Authorization" to "Bearer $token")
-        if (uid.isNotEmpty()) h.add("X-User-Id" to uid) else h.add("X-No-User-Id" to "1")
+        // 有 uid 才发 X-User-Id；缺失时不要发 X-No-User-Id——
+        // 官方客户端从不发这个头，多出来反而暴露非官方身份
+        if (uid.isNotEmpty()) h.add("X-User-Id" to uid)
 
         // —— 域/企业声明 ——
         h.add("X-No-Enterprise-Id" to "1")
@@ -295,6 +341,9 @@ class WorkBuddyAdapter : ProviderAdapter {
                 ))
             }.toString()
         }
+
+        /** 已知的 appKind 类型标识（这些值代表适配器类型，不是用户 ID）。 */
+        val KNOWN_APP_KINDS = setOf("workbuddy", "codebuddy", "workbuddyai", "workbuddy_ai", "")
 
         const val CLIENT_VER = "5.5.4"
         const val CLI_VER = "2.137.1"

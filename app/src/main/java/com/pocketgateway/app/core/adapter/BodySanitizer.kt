@@ -34,6 +34,14 @@ object BodySanitizer {
         "You are a coding agent running in the Codex CLI",
         "github.com/anthropics/",
         "11128",
+        // 补充：其他常见客户端身份句与中转指纹
+        "You are an AI assistant accessed via an API",
+        "Claude Code",
+        "claude-code",
+        "codex_cli",
+        "codex_cli_rs",
+        "anthropic-beta",
+        "anthropic-version",
     )
 
     /** 模板句改写：每句只改一个词，语义不变。 */
@@ -125,7 +133,29 @@ object BodySanitizer {
      * （tool_calls 的 arguments 常被漏掉，历史上导致指纹漏出）。
      */
     fun sanitizeBody(body: JsonObject): JsonObject {
-        val messages = body["messages"] as? JsonArray ?: return body
+        // 顶层字段：system / instructions / tools / tool_choice 等都可能藏指纹，
+        // 全部先做一次通用净化（历史版本只处理 messages，导致 system 段漏网）
+        var topChanged = false
+        val topCleaned = buildJsonObject {
+            body.forEach { (k, v) ->
+                when (k) {
+                    "messages" -> put(k, v) // 下面单独处理
+                    "system", "instructions", "prompt" -> {
+                        val nv = sanitizeContent(v)
+                        if (nv != v) topChanged = true
+                        put(k, nv)
+                    }
+                    "tools", "tool_choice", "functions" -> {
+                        val nv = sanitizeDeep(v)
+                        if (nv != v) topChanged = true
+                        put(k, nv)
+                    }
+                    else -> put(k, v)
+                }
+            }
+        }
+        val base = if (topChanged) topCleaned else body
+        val messages = base["messages"] as? JsonArray ?: return base
         var changed = false
 
         val newMessages = buildJsonArray {
@@ -159,9 +189,17 @@ object BodySanitizer {
                 add(rebuilt)
             }
         }
-        if (!changed) return body
+        if (!changed) return base
         return buildJsonObject {
-            body.forEach { (k, v) -> if (k == "messages") put(k, newMessages) else put(k, v) }
+            base.forEach { (k, v) -> if (k == "messages") put(k, newMessages) else put(k, v) }
         }
+    }
+
+    /** 递归净化任意 JSON（用于 tools / tool_choice 等嵌套结构）。 */
+    private fun sanitizeDeep(el: JsonElement): JsonElement = when (el) {
+        is JsonPrimitive -> if (el.isString) JsonPrimitive(sanitizeText(el.content)) else el
+        is JsonArray -> buildJsonArray { el.forEach { add(sanitizeDeep(it)) } }
+        is JsonObject -> buildJsonObject { el.forEach { (k, v) -> put(k, sanitizeDeep(v)) } }
+        else -> el
     }
 }
