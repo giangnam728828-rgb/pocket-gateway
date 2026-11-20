@@ -9,6 +9,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /** 全局单例容器。 */
@@ -34,9 +35,10 @@ class PocketGatewayApp : Application() {
         logStore = LogStore { configStore.config.value.maxLogEntries }
         usageDb = UsageDatabase(this)
 
-        // 配置变化时自动同步每日签到/领任务调度（无 APP_NATIVE 渠道时为空操作）。
+        // 等首次配置加载完成后再同步，避免用空配置误取消已注册的周期任务。
         checkInScheduler = CheckInScheduler(this)
         appScope.launch {
+            configStore.ready.first { it }
             configStore.config.collect { cfg ->
                 runCatching { checkInScheduler.sync(cfg) }
             }

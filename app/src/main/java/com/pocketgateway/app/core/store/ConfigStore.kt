@@ -39,6 +39,11 @@ class ConfigStore(private val context: Context) {
     private val _config = MutableStateFlow(GatewayConfig())
     val config: StateFlow<GatewayConfig> = _config.asStateFlow()
 
+    private val _ready = MutableStateFlow(false)
+
+    /** 首次配置加载（DataStore 读取）完成后置为 true。 */
+    val ready: StateFlow<Boolean> = _ready.asStateFlow()
+
     /** 供需要一次性读取最新配置的调用方使用。 */
     val configFlow: Flow<GatewayConfig> = _config
 
@@ -50,6 +55,7 @@ class ConfigStore(private val context: Context) {
                 }
             }.getOrNull()
             _config.value = normalize(stored ?: GatewayConfig())
+            _ready.value = true
         }
     }
 
