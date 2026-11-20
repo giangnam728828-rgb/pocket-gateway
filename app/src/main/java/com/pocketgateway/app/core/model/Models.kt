@@ -131,6 +131,9 @@ data class Channel(
      */
     val appKind: String = "",
 
+    /** 设备令牌（X-Device-Token），可留空；留空时不注入该头。 */
+    val deviceToken: String = "",
+
     /**
      * 是否启用请求体指纹净化（默认关闭）。
      *

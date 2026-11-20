@@ -24,6 +24,8 @@ data class UpstreamResponse(
     val status: Int,
     val body: String,
     val contentType: String?,
+    /** 响应头（key 统一小写），用于读取 Retry-After / x-ratelimit-*。 */
+    val headers: Map<String, String> = emptyMap(),
 )
 
 /**
@@ -89,7 +91,10 @@ class UpstreamClient {
         }
         val status = response.status.value
         val bodyText = response.body<String>()
-        UpstreamResponse(status, bodyText, response.contentType()?.toString())
+        val headers = response.headers.entries().associate { (k, v) ->
+            k.lowercase() to v.joinToString(",")
+        }
+        UpstreamResponse(status, bodyText, response.contentType()?.toString(), headers)
     }
 
     /** 流式请求：返回 prepare 好的响应，由调用方读取字节流。 */

@@ -4,11 +4,16 @@ import com.pocketgateway.app.core.adapter.AdapterRegistry
 import com.pocketgateway.app.core.model.Channel
 import com.pocketgateway.app.util.AppJson
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
@@ -110,6 +115,7 @@ object WorkBuddyApi {
         method: String,
         body: String? = null,
         chat: Boolean = false,
+        extraHeaders: List<Pair<String, String>> = emptyList(),
     ): Pair<Int, String> {
         val headers = if (ch.type == com.pocketgateway.app.core.model.ProviderType.APP_NATIVE) {
             com.pocketgateway.app.core.adapter.WorkBuddyAdapter().buildHeaders(ch, chat = chat)
@@ -127,6 +133,7 @@ object WorkBuddyApi {
             headers.forEach { (n, v) ->
                 if (!n.equals("Content-Type", ignoreCase = true)) setRequestProperty(n, v)
             }
+            extraHeaders.forEach { (n, v) -> setRequestProperty(n, v) }
             if (method != "GET") doOutput = true
         }
         return try {
@@ -388,6 +395,8 @@ object WorkBuddyApi {
         val creditsUsed: Long? = null,
         val usable: Boolean = true,
         val statusReason: String = "",
+        /** 积分来源：summary（Web 计费域）/ copilot（逐笔账户）。 */
+        val creditsSource: String = "",
     ) {
         /** 使用百分比 0..100。 */
         val percent: Int
@@ -406,55 +415,56 @@ object WorkBuddyApi {
         "/billing/meter/user-resource",
     )
 
+    /**
+     * Web 计费域候选。优先级：
+     *  1. `www.workbuddy.cn`（国内 Web 域，resource-summary 实测所在域）
+     *  2. `www.codebuddy.cn`（国内新域名备份）
+     *  3. `www.workbuddy.ai`（国际）
+     */
+    private fun billingBases(ch: Channel): List<String> =
+        if (isGlobal(ch)) listOf("https://www.workbuddy.ai")
+        else listOf("https://www.workbuddy.cn", "https://www.codebuddy.cn")
+
     suspend fun fetchAccount(ch: Channel): AccountInfo? = withContext(Dispatchers.IO) {
-        val base = resolveBase(ch)
-        var code = 0
-        var text = ""
-        for (p in resourceCandidates) {
-            val (c, t) = request(ch, base + p, "GET")
-            code = c
-            text = t
-            if (c != 404) break   // 404=路由不存在，换下一个
-        }
-        // 资源端点取不到时，回退到已验证可用的能量接口（data.balance）
-        if (code !in 200..299) {
-            val (ec, et) = request(ch, base + "/v2/activity/growth/energy", "GET")
-            if (ec in 200..299) {
-                val eo = unwrap(et) as? JsonObject
-                val bal = (eo?.get("balance") as? JsonPrimitive)?.content?.toLongOrNull()
-                    ?: (eo?.get("energy") as? JsonPrimitive)?.content?.toLongOrNull()
-                if (bal != null) {
+        // 正确口径：POST /billing/meter/get-user-resource-summary → data.TotalCredits
+        for (base in billingBases(ch)) {
+            val (code, text) = request(
+                ch,
+                base + "/billing/meter/get-user-resource-summary",
+                "POST",
+                "{}",
+            )
+            if (code in 200..299) {
+                BillingParser.parseSummary(text)?.let { s ->
                     return@withContext AccountInfo(
-                        uid = ch.appKind, creditsRemain = bal,
-                        creditsTotal = null, creditsUsed = null,
+                        uid = ch.appKind,
+                        creditsRemain = s.remain,
+                        creditsTotal = s.total,
+                        creditsUsed = s.used,
+                        creditsSource = "summary",
                     )
                 }
             }
-            return@withContext null
-        }
-        val data = unwrap(text) as? JsonObject ?: return@withContext null
-
-        fun num(vararg keys: String): Long? = keys.firstNotNullOfOrNull { k ->
-            (data[k] as? JsonPrimitive)?.content?.toLongOrNull()
-        }
-        fun str(vararg keys: String): String? = keys.firstNotNullOfOrNull { k ->
-            (data[k] as? JsonPrimitive)?.content?.takeIf { it.isNotBlank() }
         }
 
-        val remain = num("credits", "credit", "balance", "remainCredits", "availableCredits", "remainingCredits")
-        val total = num("totalCredits", "total", "total_credits", "quota", "totalQuota")
-        val used = num("usedCredits", "used", "used_credits")
-            ?: if (remain != null && total != null) (total - remain).coerceAtLeast(0) else null
+        // 兜底口径：Copilot 逐笔账户（data.Response.Data.Accounts[]）
+        val base = resolveBase(ch)
+        for (p in resourceCandidates) {
+            val (c, t) = request(ch, base + p, "GET")
+            if (c !in 200..299) continue
+            BillingParser.parseCopilot(t)?.let { s ->
+                return@withContext AccountInfo(
+                    uid = ch.appKind,
+                    creditsRemain = s.remain,
+                    creditsTotal = s.total,
+                    creditsUsed = s.used,
+                    creditsSource = "copilot",
+                )
+            }
+        }
 
-        AccountInfo(
-            uid = str("uid", "userId", "user_id") ?: ch.appKind,
-            nickname = str("nickname", "name", "userName") ?: "",
-            creditsRemain = remain,
-            creditsTotal = total,
-            creditsUsed = used,
-            usable = !(str("status")?.equals("disabled", true) ?: false),
-            statusReason = str("reason", "statusReason") ?: "",
-        )
+        // 取不到积分就返回 null，绝不再拿 energy.balance 冒充积分。
+        null
     }
 
     suspend fun fetchResource(ch: Channel): AccountInfo? = fetchAccount(ch)
@@ -498,6 +508,9 @@ object WorkBuddyApi {
         val target: Long = 0,
         val accepted: Boolean = false,
         val claimable: Boolean = false,
+        val claimed: Boolean = false,
+        val locked: Boolean = false,
+        val platform: String = "desktop",
         val tag: String = "",
     ) {
         val progressText: String
@@ -505,97 +518,226 @@ object WorkBuddyApi {
 
         val statusText: String
             get() = when {
+                claimed -> "已领取"
                 claimable -> "可领取"
+                locked -> "未解锁"
                 !accepted -> "未接取"
                 target > 0 && current >= target -> "已完成"
                 else -> "进行中"
             }
     }
 
-    /** 拉取任务列表（GET /v2/activity/growth/tasks）。 */
+    /** 小程序口径请求头：部分任务只在该口径下发/可操作。 */
+    private val mpHeaders = listOf("X-Client-Platform" to "miniprogram")
+
+    /** 拉取任务列表：合并桌面口径 + 小程序口径，按 task_code 去重。 */
     suspend fun fetchTasks(ch: Channel): Pair<List<GrowthTask>, String?> = withContext(Dispatchers.IO) {
+        val desktop = fetchTasksOnce(ch, mini = false)
+        val mp = fetchTasksOnce(ch, mini = true)
+        val merged = LinkedHashMap<String, GrowthTask>()
+        (desktop.first + mp.first).forEach { t -> if (!merged.containsKey(t.code)) merged[t.code] = t }
+        val err = when {
+            merged.isNotEmpty() -> null
+            desktop.second != null -> desktop.second
+            else -> mp.second
+        }
+        merged.values.toList() to err
+    }
+
+    private fun fetchTasksOnce(ch: Channel, mini: Boolean): Pair<List<GrowthTask>, String?> {
         val base = resolveBase(ch)
-        val (code, text) = request(ch, base + tasksPath(ch), "GET")
-        if (code !in 200..299) return@withContext emptyList<GrowthTask>() to "HTTP $code：${text.take(120)}"
+        val (code, text) = request(
+            ch, base + tasksPath(ch), "GET",
+            extraHeaders = if (mini) mpHeaders else emptyList(),
+        )
+        if (code !in 200..299) return emptyList<GrowthTask>() to "HTTP $code：${text.take(120)}"
 
-        val root = runCatching { AppJson.parseToJsonElement(text) }.getOrNull()
-        val data = unwrap(text)
-        if (data == null) return@withContext emptyList<GrowthTask>() to "业务码非 0：${text.take(120)}"
-
+        val data = unwrap(text) ?: return emptyList<GrowthTask>() to "业务码非 0：${text.take(120)}"
         var arr: JsonArray? = null
         if (data is JsonArray) arr = data
         else if (data is JsonObject) {
             arr = (data["tasks"] as? JsonArray) ?: (data["list"] as? JsonArray)
         }
-        val list = arr ?: return@withContext emptyList<GrowthTask>() to "响应无 tasks 字段：${text.take(160)}"
+        val list = arr ?: return emptyList<GrowthTask>() to "响应无 tasks 字段：${text.take(160)}"
 
-        val tasks = list.mapNotNull { e ->
-            val o = e as? JsonObject ?: return@mapNotNull null
-            val tc = (o["task_code"] as? JsonPrimitive)?.content
-                ?: (o["code"] as? JsonPrimitive)?.content ?: return@mapNotNull null
-            val title = (o["title"] as? JsonPrimitive)?.content
-                ?: (o["name"] as? JsonPrimitive)?.content ?: tc
-            val desc = (o["description"] as? JsonPrimitive)?.content
-                ?: (o["task_desc"] as? JsonPrimitive)?.content ?: ""
-            val credit = (o["reward_credit"] as? JsonPrimitive)?.content?.toLongOrNull()
-                ?: (o["credit"] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0L
-            val current = (o["current"] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0L
-            val target = (o["target"] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0L
-            val acceptStatus = (o["accept_status"] as? JsonPrimitive)?.content ?: ""
-            val accepted = acceptStatus == "accepted" || acceptStatus == "accepted_rewarded"
-            val claimed = (o["claimed"] as? JsonPrimitive)?.content?.toBooleanStrictOrNull() ?: false
-            val tag = (o["tag"] as? JsonPrimitive)?.content ?: ""
-            GrowthTask(
-                code = tc, title = title, desc = desc, credit = credit,
-                current = current, target = target, accepted = accepted,
-                claimable = !claimed && target > 0 && current >= target,
-                tag = tag,
-            )
-        }
-        tasks to if (tasks.isEmpty()) "上游返回 ${list.size} 条但未解析出任务" else null
+        val tasks = list.mapNotNull { parseTask(it, mini) }
+        return tasks to if (tasks.isEmpty() && list.isNotEmpty()) {
+            "上游返回 ${list.size} 条但未解析出任务"
+        } else null
     }
+
+    private fun parseTask(e: JsonElement, mini: Boolean): GrowthTask? {
+        val o = e as? JsonObject ?: return null
+        val tc = (o["task_code"] as? JsonPrimitive)?.content
+            ?: (o["code"] as? JsonPrimitive)?.content ?: return null
+        val title = (o["title"] as? JsonPrimitive)?.content
+            ?: (o["name"] as? JsonPrimitive)?.content ?: tc
+        val desc = (o["description"] as? JsonPrimitive)?.content
+            ?: (o["task_desc"] as? JsonPrimitive)?.content ?: ""
+        val credit = (o["reward_credit"] as? JsonPrimitive)?.content?.toLongOrNull()
+            ?: (o["credit"] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0L
+
+        // progress 可能是 {current,target} 对象，也可能平铺在任务对象上
+        val progress = o["progress"] as? JsonObject
+        fun pn(key: String): Long? = (progress?.get(key) as? JsonPrimitive)?.content?.toLongOrNull()
+        val current = pn("current")
+            ?: (o["current"] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0L
+        val target = pn("target")
+            ?: (o["target"] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0L
+
+        val acceptStatus = (o["accept_status"] as? JsonPrimitive)?.content ?: ""
+        val claimed = acceptStatus == "claimed" ||
+            ((o["claimed"] as? JsonPrimitive)?.content?.toBooleanStrictOrNull() ?: false)
+        val accepted = acceptStatus in setOf("accepted", "completed", "accepted_rewarded", "claimed")
+        val locked = (o["locked"] as? JsonPrimitive)?.content?.toBooleanStrictOrNull() ?: false
+        val tag = (o["tag"] as? JsonPrimitive)?.content ?: ""
+
+        return GrowthTask(
+            code = tc,
+            title = title,
+            desc = desc,
+            credit = credit,
+            current = current,
+            target = target,
+            accepted = accepted,
+            claimable = !claimed && !locked && target > 0 && current >= target,
+            claimed = claimed,
+            locked = locked,
+            platform = if (mini) "mp" else "desktop",
+            tag = tag,
+        )
+    }
+
+    /** 活跃上报（growth 域）：POST /v2/report，用于点亮“对话”类任务的前置。 */
+    suspend fun reportChatActivity(
+        ch: Channel,
+        modelId: String = "deepseek-v4-flash",
+        modelName: String = "",
+    ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        val base = resolveBase(ch)
+        val uid = com.pocketgateway.app.core.adapter.WorkBuddyAdapter().resolveUid(ch)
+        val now = System.currentTimeMillis()
+        val conv = "wb2a-$now"
+        val req = "wb2a-$now-1"
+        val mid = modelId.ifBlank { "deepseek-v4-flash" }
+        val mname = modelName.ifBlank { mid }
+
+        val event = buildJsonObject {
+            put("eventCode", "chat_request_send")
+            put("timestamp", now)
+            put("reportDelay", 0)
+            put("mode", "craft")
+            put("conversationId", conv)
+            put("requestId", req)
+            put("inputLength", 12)
+            put("requestModelId", mid)
+            put("requestModelName", mname)
+            put("isPlan", false)
+            put("isAutoExecuteTerminal", false)
+            put("isAutoModify", false)
+            put("codebaseEnable", false)
+            put("maxToken", 0)
+            put("maxSteps", 0)
+            put("temperature", 0)
+            put("maxRetries", 0)
+            put("mentionContexts", buildJsonArray { })
+            put("knowledgeId", buildJsonArray { })
+            put("knowledgeName", buildJsonArray { })
+            put("codebaseId", "")
+            put("mentionContextCount", 0)
+            put("command", "")
+            put("expertId", "")
+            put("recommendId", "")
+            put("skillId", "")
+            put("skillCount", 0)
+            put("totalCount", 0)
+            put("fileUri", "")
+            put("presentAt", now)
+            put("traceId", "")
+            put("rootRequestId", req)
+            put("parentConversationId", conv)
+            put("agentName", "default")
+            put("agentType", "conversation")
+            put("userId", uid)
+        }
+        val payload = buildJsonArray { add(event) }.toString()
+        val (code, text) = request(ch, base + "/v2/report", "POST", payload)
+        val ok = code in 200..299 && unwrap(text) != null
+        if (ok) true to "活跃已上报" else false to "上报失败：HTTP $code ${text.take(80)}"
+    }
+
+    /** 领养首只 Buddy 的协议确认与领取（first_buddy 任务前置）。 */
+    suspend fun buddyAgreement(ch: Channel): Pair<Boolean, String> =
+        postGrowth(ch, "/activity/growth/buddy/agreement", "{\"agree\":true}")
+
+    suspend fun buddyFirst(ch: Channel): Pair<Boolean, String> =
+        postGrowth(ch, "/activity/growth/buddy/first", "{}")
+
+    private suspend fun postGrowth(ch: Channel, path: String, body: String): Pair<Boolean, String> =
+        withContext(Dispatchers.IO) {
+            val (code, text) = request(ch, resolveBase(ch) + path, "POST", body)
+            val ok = code in 200..299 && unwrap(text) != null
+            if (ok) true to "ok" else false to "HTTP $code ${text.take(80)}"
+        }
 
     /** 接取任务（POST /v2/activity/growth/tasks/accept）。 */
     suspend fun acceptTasks(ch: Channel, codes: List<String>): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        if (codes.isEmpty()) return@withContext true to "无需接取"
         val base = resolveBase(ch)
         val body = codes.joinToString(",", "[", "]") { "\"$it\"" }
         val payload = "{\"task_codes\":$body}"
         val (http, text) = request(ch, base + "/v2/activity/growth/tasks/accept", "POST", payload)
-        if (http !in 200..299) return@withContext false to "HTTP $http：${text.take(120)}"
-        true to "已接取 ${codes.size} 个任务"
+        val ok = http in 200..299 && unwrap(text) != null
+        if (ok) true to "已接取 ${codes.size} 个任务"
+        else false to "接取失败：HTTP $http ${text.take(100)}"
     }
 
-    /** 领取单个任务奖励。 */
+    /**
+     * 领取单个任务奖励。按上游两种口径依次尝试：
+     *  1. `POST /v2/activity/growth/tasks/reward/claim` + body
+     *  2. `POST /activity/growth/tasks/{code}/claim`（小程序口径，需 mp 头）
+     *  3. `POST /v2/activity/growth/tasks/{code}/claim`（兼容旧路由）
+     */
     suspend fun claimTask(ch: Channel, code: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         val base = resolveBase(ch)
-        // 端点 A（社区实测）：路径含 task_code、无 body
-        val (h1, t1) = request(ch, "$base/activity/growth/tasks/$code/claim", "POST", null)
-        if (h1 in 200..299) return@withContext true to "已领取"
-        // 端点 B（panel 分支口径）：reward/claim + body
-        val (h2, t2) = request(
+        val (h1, t1) = request(
             ch, "$base/v2/activity/growth/tasks/reward/claim", "POST",
             "{\"task_code\":\"$code\"}",
         )
-        if (h2 in 200..299) return@withContext true to "已领取"
-        false to "HTTP $h1/${t1.take(60)}；备选 HTTP $h2/${t2.take(60)}"
+        if (h1 in 200..299 && unwrap(t1) != null) return@withContext true to "已领取"
+
+        val (h2, t2) = request(
+            ch, "$base/activity/growth/tasks/$code/claim", "POST", null,
+            extraHeaders = mpHeaders,
+        )
+        if (h2 in 200..299 && unwrap(t2) != null) return@withContext true to "已领取"
+
+        val (h3, t3) = request(ch, "$base/v2/activity/growth/tasks/$code/claim", "POST", null)
+        if (h3 in 200..299 && unwrap(t3) != null) return@withContext true to "已领取"
+
+        false to "领取失败：HTTP $h1/${h2}/${h3} ${t1.take(60)}"
     }
 
-    /** 一键领取所有可领任务奖励。返回（成功数，失败数，说明）。 */
+    /** 一键领取：先接取未接取任务，再逐个领取已完成任务（带请求间隔）。 */
     suspend fun claimAllTasks(ch: Channel): Triple<Int, Int, String> = withContext(Dispatchers.IO) {
         val tasks = fetchTasks(ch).first
         if (tasks.isEmpty()) return@withContext Triple(0, 0, "没有可领取的任务")
 
-        val base = resolveBase(ch)
+        val pending = tasks.filter { !it.claimed && !it.locked && !it.accepted }.map { it.code }
+        if (pending.isNotEmpty()) acceptTasks(ch, pending)
+
+        val claimable = fetchTasks(ch).first.filter { it.claimable }
+        if (claimable.isEmpty()) {
+            return@withContext Triple(0, 0, "暂无可领取任务（需先在客户端完成任务）")
+        }
+
         var ok = 0
         var fail = 0
-        for (t in tasks.filter { it.claimable }) {
-            val (code, _) = request(ch, "$base/activity/growth/tasks/${t.code}/claim", "POST", null)
-            if (code in 200..299) ok++ else fail++
+        for (t in claimable) {
+            delay(kotlin.random.Random.nextLong(1200, 2600))
+            val (good, _) = claimTask(ch, t.code)
+            if (good) ok++ else fail++
         }
-        if (ok == 0 && fail == 0) {
-            Triple(0, 0, "没有可领取的任务")
-        } else {
-            Triple(ok, fail, "领取成功 $ok 个" + if (fail > 0) "，失败 $fail 个" else "")
-        }
+        Triple(ok, fail, "领取成功 $ok 个" + if (fail > 0) "，失败 $fail 个" else "")
     }
 }

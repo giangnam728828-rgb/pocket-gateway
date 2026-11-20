@@ -23,12 +23,14 @@ class ChannelCooldown {
         (states[channelId]?.until ?: 0L) > System.currentTimeMillis()
     }
 
-    /** 记录一次限流/封禁，返回本次冷却的毫秒数。 */
-    suspend fun penalize(channelId: String, status: Int): Long = mutex.withLock {
+    /** 记录一次限流/封禁，返回本次冷却的毫秒数。retryAfterMs > 0 时优先采用上游指示。 */
+    suspend fun penalize(channelId: String, status: Int, retryAfterMs: Long = 0L): Long = mutex.withLock {
         val now = System.currentTimeMillis()
         val prev = states[channelId] ?: State()
         val strikes = (prev.strikes + 1).coerceAtMost(6)
-        val baseMs = when (status) {
+        val baseMs = if (retryAfterMs > 0) {
+            retryAfterMs
+        } else when (status) {
             403 -> 300_000L // 疑似封禁：5 分钟起
             429 -> 60_000L  // 限流：1 分钟起
             else -> 30_000L

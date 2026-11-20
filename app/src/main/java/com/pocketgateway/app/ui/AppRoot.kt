@@ -21,9 +21,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.pocketgateway.app.ui.screen.AccessCenterScreen
 import com.pocketgateway.app.ui.screen.AppAccountScreen
 import com.pocketgateway.app.ui.screen.ChannelsScreen
-import com.pocketgateway.app.ui.screen.ModelsScreen
 import com.pocketgateway.app.ui.screen.OverviewScreen
 import com.pocketgateway.app.ui.screen.TasksScreen
 import com.pocketgateway.app.ui.screen.UsageScreen
@@ -34,7 +34,7 @@ fun AppRoot(vm: GatewayViewModel = viewModel()) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     val tabs = listOf(
         "概览" to Icons.Filled.Home,
-        "模型" to Icons.Filled.List,
+        "接入" to Icons.Filled.List,
         "账号" to Icons.Filled.AccountCircle,
         "任务" to Icons.Filled.Article,
         "用量" to Icons.Filled.Assessment,
@@ -58,7 +58,7 @@ fun AppRoot(vm: GatewayViewModel = viewModel()) {
         Box(modifier = Modifier.padding(padding)) {
             when (tab) {
                 0 -> OverviewScreen(vm)
-                1 -> ModelsScreen(vm)
+                1 -> AccessCenterScreen(vm)
                 2 -> AppAccountScreen(vm)
                 3 -> TasksScreen(vm)
                 4 -> UsageScreen(vm)

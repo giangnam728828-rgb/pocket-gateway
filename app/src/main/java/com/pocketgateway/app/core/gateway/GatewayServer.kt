@@ -162,10 +162,18 @@ class GatewayServer(
      * 从候选中剔除处于冷却的渠道；若全部在冷却则退回原列表，
      * 避免出现“所有渠道都被冷却导致彻底无路可走”的情况。
      */
-    private suspend fun List<Channel>.excludeCooling(): List<Channel> {
+    private suspend fun List<Channel>.excludeCooling(model: String): List<Channel> {
         if (isEmpty()) return this
-        val available = filter { !cooldown.isCooling(it.id) }
+        val available = filter {
+            !cooldown.isCooling(it.id) && !RequestThrottle.isModelCooling(it.id, model)
+        }
         return if (available.isEmpty()) this else available
+    }
+
+    /** 解析 Retry-After（仅支持秒数形式）。 */
+    private fun parseRetryAfterMs(value: String?): Long {
+        val sec = value?.trim()?.toLongOrNull() ?: return 0L
+        return (sec * 1000L).coerceIn(0L, 30 * 60_000L)
     }
 
     // ---- 处理器 ----
@@ -221,7 +229,7 @@ class GatewayServer(
         val body: JsonObject = parsed
 
         val model = body.modelName()
-        val candidates = selectChannels(cfg, model).excludeCooling()
+        val candidates = selectChannels(cfg, model).excludeCooling(model)
         if (candidates.isEmpty()) {
             return respondError(
                 HttpStatusCode.ServiceUnavailable,
@@ -265,13 +273,18 @@ class GatewayServer(
                             payload.body.take(160).replace(Regex("\\s+"), " ")
                         )
                     }
+                    RequestThrottle.before(channel.id)
                     val (st, text) = com.pocketgateway.app.core.appaccount.WorkBuddyApi
                         .chatStream(channel, payload.body, timeout)
                     val ok = st in 200..299
                     if (ok) {
                         cooldown.clear(channel.id)
+                        RequestThrottle.clearModel(channel.id, model)
                     } else if (st == 429 || st == 403) {
                         cooldown.penalize(channel.id, st)
+                    }
+                    if (text.contains("11102")) {
+                        RequestThrottle.penalizeModel(channel.id, model)
                     }
                     val respHead = text.take(200).replace(Regex("\\s+"), " ")
                     log(cfg, model, channel, st, ok, System.currentTimeMillis() - start,
@@ -310,11 +323,20 @@ class GatewayServer(
                     forwardStream(channel, adapter, payload, timeout, model, start)
                     return
                 } else {
+                    RequestThrottle.before(channel.id)
                     val resp = upstream.call(channel, adapter, "chat", payload, timeout)
                     if (resp.status in 200..299) {
                         cooldown.clear(channel.id)
+                        RequestThrottle.clearModel(channel.id, model)
                     } else if (resp.status == 429 || resp.status == 403) {
-                        cooldown.penalize(channel.id, resp.status)
+                        cooldown.penalize(
+                            channel.id,
+                            resp.status,
+                            parseRetryAfterMs(resp.headers["retry-after"]),
+                        )
+                    }
+                    if (resp.body.contains("11102")) {
+                        RequestThrottle.penalizeModel(channel.id, model)
                     }
                     val out = if (resp.status in 200..299) {
                         // 上游只支持流式（非流式返回 11101），非流式客户端在此聚合 SSE
@@ -354,12 +376,18 @@ class GatewayServer(
         model: String?,
         start: Long,
     ) {
+        RequestThrottle.before(channel.id)
         val upstreamResp = upstream.prepareStream(channel, adapter, "chat", payload, timeout)
         val status = upstreamResp.status.value
         if (status in 200..299) {
             cooldown.clear(channel.id)
+            RequestThrottle.clearModel(channel.id, model ?: "")
         } else if (status == 429 || status == 403) {
-            cooldown.penalize(channel.id, status)
+            cooldown.penalize(
+                channel.id,
+                status,
+                parseRetryAfterMs(upstreamResp.headers["retry-after"]),
+            )
         }
         this.response.header("X-PocketGateway-Channel", channel.name)
         this.response.header(HttpHeaders.CacheControl, "no-cache")
@@ -406,7 +434,7 @@ class GatewayServer(
         val model = body.modelName()
         val candidates = selectChannels(cfg, model)
             .filter { it.type == ProviderType.OPENAI_COMPAT }
-            .excludeCooling()
+            .excludeCooling(model)
         if (candidates.isEmpty()) {
             return respondError(HttpStatusCode.ServiceUnavailable, "no_channel", "No channel supports embeddings")
         }
@@ -419,11 +447,20 @@ class GatewayServer(
             val payload = RequestPayload(AppJson.encodeToString(JsonObject.serializer(), mapped))
             val timeout = if (channel.timeoutMs > 0) channel.timeoutMs else cfg.defaultTimeoutMs
             try {
+                RequestThrottle.before(channel.id)
                 val resp = upstream.call(channel, AdapterRegistry.get(channel), "embeddings", payload, timeout)
                 if (resp.status in 200..299) {
                     cooldown.clear(channel.id)
+                    RequestThrottle.clearModel(channel.id, model)
                 } else if (resp.status == 429 || resp.status == 403) {
-                    cooldown.penalize(channel.id, resp.status)
+                    cooldown.penalize(
+                        channel.id,
+                        resp.status,
+                        parseRetryAfterMs(resp.headers["retry-after"]),
+                    )
+                }
+                if (resp.body.contains("11102")) {
+                    RequestThrottle.penalizeModel(channel.id, model)
                 }
                 log(cfg, model, channel, resp.status, resp.status in 200..299,
                     System.currentTimeMillis() - start, "", false)

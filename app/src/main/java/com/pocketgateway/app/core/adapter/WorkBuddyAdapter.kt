@@ -58,7 +58,7 @@ class WorkBuddyAdapter : ProviderAdapter {
      * 现在优先从 accessToken（JWT）payload 解析真实 uid，解析不到时才把
      * appKind 当兜底（且必须在它不像类型名时）。
      */
-    private fun resolveUid(channel: Channel): String {
+    fun resolveUid(channel: Channel): String {
         val token = channel.apiKey.trim()
         if (token.count { it == '.' } >= 2) {
             val hit = runCatching {
@@ -130,6 +130,10 @@ class WorkBuddyAdapter : ProviderAdapter {
             h.add("X-Machine-ID" to deriveStableId(uid, "machine"))
             h.add("X-Session-ID" to deriveStableId(uid, "session"))
         }
+        // 设备令牌（可选）：官方桌面端会带，留空时不发，避免伪造错误值
+        if (channel.deviceToken.isNotBlank()) {
+            h.add("X-Device-Token" to channel.deviceToken.trim())
+        }
 
         // —— 鉴权 ——
         if (token.isNotEmpty()) h.add("Authorization" to "Bearer $token")
@@ -152,7 +156,6 @@ class WorkBuddyAdapter : ProviderAdapter {
             h.add("X-IDE-Type" to "WorkBuddy")
             h.add("X-IDE-Version" to CLIENT_VER)
             h.add("X-Product" to "WorkBuddy")
-
             // 会话头族：X-Conversation-ID 与 body 的 conversationId 保持同一个值
             val msgId = newHexId()
             h.add("X-Conversation-ID" to convId)

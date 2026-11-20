@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -19,6 +20,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -35,6 +37,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.pocketgateway.app.core.appaccount.ModelRow
 import com.pocketgateway.app.core.appaccount.WorkBuddyApi
+import com.pocketgateway.app.core.appaccount.task.TaskActionRegistry
+import com.pocketgateway.app.core.appaccount.task.TaskAutomationEngine
 import com.pocketgateway.app.core.model.Channel
 import com.pocketgateway.app.core.model.ProviderType
 import com.pocketgateway.app.ui.viewmodel.GatewayViewModel
@@ -296,6 +300,7 @@ fun TasksScreen(vm: GatewayViewModel) {
     var streak by remember { mutableStateOf<Long?>(null) }
     var busy by remember { mutableStateOf(false) }
     var msg by remember { mutableStateOf<String?>(null) }
+    var showAutoConfirm by remember { mutableStateOf(false) }
 
     fun reload() {
         val c = ch ?: return
@@ -339,6 +344,9 @@ fun TasksScreen(vm: GatewayViewModel) {
                             busy = false
                         }
                     }) { Text("一键领取") }
+                    OutlinedButton(enabled = !busy && ch != null, onClick = { showAutoConfirm = true }) {
+                        Text("自动完成")
+                    }
                 }
                 msg?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                 Text(
@@ -384,6 +392,40 @@ fun TasksScreen(vm: GatewayViewModel) {
             }
         }
     }
+
+    if (showAutoConfirm) {
+        AlertDialog(
+            onDismissRequest = { showAutoConfirm = false },
+            title = { Text("自动完成任务") },
+            text = {
+                Text(
+                    "将对可自动化的任务执行真实操作（对话、领养 Buddy 等），会消耗少量积分，" +
+                        "并可能触发上游风控。仅建议在自己的账号上低频使用。是否继续？",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showAutoConfirm = false
+                    val c = ch ?: return@TextButton
+                    busy = true
+                    msg = "准备执行…"
+                    scope.launch {
+                        val results = TaskAutomationEngine().run(c) { progress -> msg = progress }
+                        msg = if (results.isEmpty()) "没有可自动执行的任务"
+                        else "自动完成：成功 ${results.count { it.ok }} / ${results.size}"
+                        tasks = WorkBuddyApi.fetchTasks(c).first
+                        val (e, s) = WorkBuddyApi.fetchEnergy(c)
+                        energy = e
+                        streak = s
+                        busy = false
+                    }
+                }) { Text("开始") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAutoConfirm = false }) { Text("取消") }
+            },
+        )
+    }
 }
 
 @Composable
@@ -416,6 +458,14 @@ private fun TaskItem(
         }
         Text(meta.joinToString(" · "), style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (!t.claimable && !t.claimed && !t.locked) {
+            Text(
+                if (TaskActionRegistry.canAuto(t.code)) "可自动完成"
+                else "需手动：${TaskActionRegistry.manualReason(t.code)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
