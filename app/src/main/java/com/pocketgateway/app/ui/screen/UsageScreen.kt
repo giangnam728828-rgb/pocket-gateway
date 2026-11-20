@@ -124,13 +124,24 @@ fun UsageScreen(vm: GatewayViewModel) {
                             }
                         }
 
+                        // 空状态
+                        if (stats.isEmpty() && recentTasks.isEmpty()) {
+                            item {
+                                Text(
+                                    "暂无自动任务记录。\n启用 APP 直连渠道后，每日签到与任务领取会自动记录在这里。",
+                                    fontSize = 14.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+
                         // 按渠道统计
                         items(stats.entries.sortedByDescending { it.value.total }) { entry ->
                             val chStats = entry.value
                             Card(
                                 modifier = Modifier.fillMaxWidth(),
                                 colors = CardDefaults.cardColors(
-                                    containerColor = if (chStats.rate >= 0.8) MaterialTheme.colorScheme.surfaceVariant
+                                    containerColor = if (chStats.rate >= 0.8f) MaterialTheme.colorScheme.surfaceVariant
                                     else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.2f),
                                 ),
                             ) {
@@ -142,7 +153,7 @@ fun UsageScreen(vm: GatewayViewModel) {
                                             fontSize = 16.sp,
                                         )
                                         Spacer(modifier = Modifier.width(8.dp))
-                                        if (chStats.rate >= 0.8) {
+                                        if (chStats.rate >= 0.8f) {
                                             Icon(
                                                 Icons.Filled.CheckCircle,
                                                 contentDescription = null,
@@ -182,6 +193,12 @@ fun UsageScreen(vm: GatewayViewModel) {
     }
 }
 
+private fun taskTypeLabel(type: String): String = when (type) {
+    "daily_checkin" -> "每日签到"
+    "claim_tasks" -> "任务领取"
+    else -> type
+}
+
 @Composable
 private fun TaskRow(task: UsageDatabase.TaskRecord) {
     Card(
@@ -202,7 +219,7 @@ private fun TaskRow(task: UsageDatabase.TaskRecord) {
                 tint = if (task.success) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
             )
             Column(modifier = Modifier.weight(1f)) {
-                Text(text = "${task.taskType} · ${task.channelName}", fontSize = 14.sp)
+                Text(text = "${taskTypeLabel(task.taskType)} · ${task.channelName}", fontSize = 14.sp)
                 if (!task.message.isNullOrBlank()) {
                     Text(
                         text = task.message,

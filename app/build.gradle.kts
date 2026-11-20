@@ -118,6 +118,9 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
 
+    // --- WorkManager（每日签到 / 任务领取的可靠后台调度）---
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
+
     // --- AndroidX 基础 ---
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:$LIFECYCLE")
