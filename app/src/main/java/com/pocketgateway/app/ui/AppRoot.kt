@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Article
+import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Settings
@@ -25,6 +26,7 @@ import com.pocketgateway.app.ui.screen.ChannelsScreen
 import com.pocketgateway.app.ui.screen.ModelsScreen
 import com.pocketgateway.app.ui.screen.OverviewScreen
 import com.pocketgateway.app.ui.screen.TasksScreen
+import com.pocketgateway.app.ui.screen.UsageScreen
 import com.pocketgateway.app.ui.viewmodel.GatewayViewModel
 
 @Composable
@@ -35,6 +37,7 @@ fun AppRoot(vm: GatewayViewModel = viewModel()) {
         "模型" to Icons.Filled.List,
         "账号" to Icons.Filled.AccountCircle,
         "任务" to Icons.Filled.Article,
+        "用量" to Icons.Filled.Assessment,
         "渠道" to Icons.Filled.Settings,
     )
 
@@ -58,7 +61,8 @@ fun AppRoot(vm: GatewayViewModel = viewModel()) {
                 1 -> ModelsScreen(vm)
                 2 -> AppAccountScreen(vm)
                 3 -> TasksScreen(vm)
-                4 -> ChannelsScreen(vm)
+                4 -> UsageScreen(vm)
+                5 -> ChannelsScreen(vm)
             }
         }
     }

@@ -71,6 +71,9 @@ class GatewayServer(
 
     private val upstream = UpstreamClient()
 
+    /** 渠道冷却器：429/403 时临时停止路由到该渠道，反封禁。 */
+    private val cooldown = ChannelCooldown()
+
     fun start(config: GatewayConfig) {
         if (server != null) return
         val host = if (config.listenOnAllInterfaces) "0.0.0.0" else "127.0.0.1"
@@ -155,6 +158,16 @@ class GatewayServer(
         return filter { seen.add(it.id) }
     }
 
+    /**
+     * 从候选中剔除处于冷却的渠道；若全部在冷却则退回原列表，
+     * 避免出现“所有渠道都被冷却导致彻底无路可走”的情况。
+     */
+    private suspend fun List<Channel>.excludeCooling(): List<Channel> {
+        if (isEmpty()) return this
+        val available = filter { !cooldown.isCooling(it.id) }
+        return if (available.isEmpty()) this else available
+    }
+
     // ---- 处理器 ----
 
     private suspend fun ApplicationCall.respondInfo() {
@@ -208,7 +221,7 @@ class GatewayServer(
         val body: JsonObject = parsed
 
         val model = body.modelName()
-        val candidates = selectChannels(cfg, model)
+        val candidates = selectChannels(cfg, model).excludeCooling()
         if (candidates.isEmpty()) {
             return respondError(
                 HttpStatusCode.ServiceUnavailable,
@@ -255,6 +268,11 @@ class GatewayServer(
                     val (st, text) = com.pocketgateway.app.core.appaccount.WorkBuddyApi
                         .chatStream(channel, payload.body, timeout)
                     val ok = st in 200..299
+                    if (ok) {
+                        cooldown.clear(channel.id)
+                    } else if (st == 429 || st == 403) {
+                        cooldown.penalize(channel.id, st)
+                    }
                     val respHead = text.take(200).replace(Regex("\\s+"), " ")
                     log(cfg, model, channel, st, ok, System.currentTimeMillis() - start,
                         "REQ[$reqDigest] RESP[$respHead]", wantStream)
@@ -293,6 +311,11 @@ class GatewayServer(
                     return
                 } else {
                     val resp = upstream.call(channel, adapter, "chat", payload, timeout)
+                    if (resp.status in 200..299) {
+                        cooldown.clear(channel.id)
+                    } else if (resp.status == 429 || resp.status == 403) {
+                        cooldown.penalize(channel.id, resp.status)
+                    }
                     val out = if (resp.status in 200..299) {
                         // 上游只支持流式（非流式返回 11101），非流式客户端在此聚合 SSE
                         val looksSse = (resp.contentType?.contains("event-stream", true) == true) ||
@@ -333,6 +356,11 @@ class GatewayServer(
     ) {
         val upstreamResp = upstream.prepareStream(channel, adapter, "chat", payload, timeout)
         val status = upstreamResp.status.value
+        if (status in 200..299) {
+            cooldown.clear(channel.id)
+        } else if (status == 429 || status == 403) {
+            cooldown.penalize(channel.id, status)
+        }
         this.response.header("X-PocketGateway-Channel", channel.name)
         this.response.header(HttpHeaders.CacheControl, "no-cache")
         this.response.header("X-Accel-Buffering", "no")
@@ -376,7 +404,9 @@ class GatewayServer(
         }
         val body: JsonObject = parsed
         val model = body.modelName()
-        val candidates = selectChannels(cfg, model).filter { it.type == ProviderType.OPENAI_COMPAT }
+        val candidates = selectChannels(cfg, model)
+            .filter { it.type == ProviderType.OPENAI_COMPAT }
+            .excludeCooling()
         if (candidates.isEmpty()) {
             return respondError(HttpStatusCode.ServiceUnavailable, "no_channel", "No channel supports embeddings")
         }
@@ -390,6 +420,11 @@ class GatewayServer(
             val timeout = if (channel.timeoutMs > 0) channel.timeoutMs else cfg.defaultTimeoutMs
             try {
                 val resp = upstream.call(channel, AdapterRegistry.get(channel), "embeddings", payload, timeout)
+                if (resp.status in 200..299) {
+                    cooldown.clear(channel.id)
+                } else if (resp.status == 429 || resp.status == 403) {
+                    cooldown.penalize(channel.id, resp.status)
+                }
                 log(cfg, model, channel, resp.status, resp.status in 200..299,
                     System.currentTimeMillis() - start, "", false)
                 response.header("X-PocketGateway-Channel", channel.name)
