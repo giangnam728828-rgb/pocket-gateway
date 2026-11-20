@@ -162,7 +162,7 @@ class GatewayServer(
      * 从候选中剔除处于冷却的渠道；若全部在冷却则退回原列表，
      * 避免出现“所有渠道都被冷却导致彻底无路可走”的情况。
      */
-    private suspend fun List<Channel>.excludeCooling(model: String): List<Channel> {
+    private suspend fun List<Channel>.excludeCooling(model: String?): List<Channel> {
         if (isEmpty()) return this
         val available = filter {
             !cooldown.isCooling(it.id) && !RequestThrottle.isModelCooling(it.id, model)

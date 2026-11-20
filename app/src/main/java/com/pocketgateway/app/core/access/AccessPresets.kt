@@ -15,89 +15,115 @@ data class AccessPreset(
     val jsonTemplate: (baseUrl: String, apiKey: String, model: String) -> String,
 )
 
-/** 内置的 13+ 客户端接入预设（参考主流 AI 客户端/网关的通用 OpenAI 兼容配置方式）。 */
+/** 内置的 13 款客户端接入预设（均使用 OpenAI 兼容配置）。 */
 object AccessPresets {
 
-    private fun esc(s: String) = s.replace("\\", "\\\\").replace("\"", "\\\"")
+    private fun esc(s: String): String = s.replace("\\", "\\\\").replace("\"", "\\\"")
 
     val all: List<AccessPreset> = listOf(
         AccessPreset(
-            "Chatbox", "桌面 / 移动",
-            "设置 → 模型提供方 → 选择 OpenAI API → 填入 API 域名与 API Key → 模型填下方名称。",
-        ) { b, k, m ->
-            """{"provider":"openai","apiHost":"${esc(b)}","apiKey":"${esc(k)}","model":"${esc(m)}"}"""
-        },
-        AccessPreset(
-            "Cherry Studio", "桌面 / 移动",
-            "设置 → 模型服务 → OpenAI → API 地址填 Base URL，密钥填 API Key，添加模型后选中。",
-        ) { b, k, m ->
-            """{"type":"openai","baseUrl":"${esc(b)}","apiKey":"${esc(k)}","models":["${esc(m)}"]}"""
-        },
-        AccessPreset(
-            "LobeChat", "浏览器 / 桌面",
-            "设置 → 语言模型 → OpenAI → 开启自定义接口代理，填 Base URL、API Key，模型填下方名称。",
-        ) { b, k, m ->
-            """{"openai":{"endpoint":"${esc(b)}","apiKey":"${esc(k)}","model":"${esc(m)}"}}"""
-        },
-        AccessPreset(
-            "NextChat", "浏览器 / 桌面",
-            "设置 → 自定义接口 → 接口地址填 Base URL，API Key 填密钥，模型填下方名称。",
-        ) { b, k, m ->
-            """{"custom":{"baseUrl":"${esc(b)}","apiKey":"${esc(k)}","model":"${esc(m)}"}}"""
-        },
-        AccessPreset(
-            "Open WebUI", "浏览器",
-            "设置 → 连接 → OpenAI API → API Base URL 填 Base URL，API Key 填密钥。",
-        ) { b, k, m ->
-            """{"openai":{"base_url":"${esc(b)}","api_key":"${esc(k)}","model":"${esc(m)}"}}"""
+            name = "Chatbox",
+            category = "桌面 / 移动",
+            step = "设置 → 模型提供方 → 选择 OpenAI API → 填入 API 域名与 API Key → 模型填下方名称。",
+            jsonTemplate = { b, k, m ->
+                """{"provider":"openai","apiHost":"${esc(b)}","apiKey":"${esc(k)}","model":"${esc(m)}"}"""
+            },
         ),
         AccessPreset(
-            "Dify", "浏览器",
-            "模型供应商 → OpenAI-API-compatible → Base URL 填 Base URL，API Key 填密钥，模型名填下方名称。",
-        ) { b, k, m ->
-            """{"provider":"openai_api_compatible","base_url":"${esc(b)}","api_key":"${esc(k)}","model":"${esc(m)}"}"""
-        },
+            name = "Cherry Studio",
+            category = "桌面 / 移动",
+            step = "设置 → 模型服务 → OpenAI → API 地址填 Base URL，密钥填 API Key，添加模型后选中。",
+            jsonTemplate = { b, k, m ->
+                """{"type":"openai","baseUrl":"${esc(b)}","apiKey":"${esc(k)}","models":["${esc(m)}"]}"""
+            },
+        ),
         AccessPreset(
-            "LibreChat", "浏览器 / 自建",
-            "librechat.yaml 的 endpoints.custom 中填写 baseURL、apiKey 与 models.default。",
-        ) { b, k, m ->
-            """{"endpoints":{"custom":[{"name":"PocketGateway","baseURL":"${esc(b)}","apiKey":"${esc(k)}","models":{"default":["${esc(m)}"]}}]}}"""
-        },
+            name = "LobeChat",
+            category = "浏览器 / 桌面",
+            step = "设置 → 语言模型 → OpenAI → 开启自定义接口代理，填 Base URL、API Key，模型填下方名称。",
+            jsonTemplate = { b, k, m ->
+                """{"openai":{"endpoint":"${esc(b)}","apiKey":"${esc(k)}","model":"${esc(m)}"}}"""
+            },
+        ),
         AccessPreset(
-            "Jan", "桌面",
-            "设置 → 模型提供商 → OpenAI → 添加自定义提供商，填 Base URL 与 API Key。",
-        ) { b, k, m ->
-            """{"provider":"openai","base_url":"${esc(b)}","api_key":"${esc(k)}","model":"${esc(m)}"}"""
-        },
+            name = "NextChat",
+            category = "浏览器 / 桌面",
+            step = "设置 → 自定义接口 → 接口地址填 Base URL，API Key 填密钥，模型填下方名称。",
+            jsonTemplate = { b, k, m ->
+                """{"custom":{"baseUrl":"${esc(b)}","apiKey":"${esc(k)}","model":"${esc(m)}"}}"""
+            },
+        ),
         AccessPreset(
-            "AnythingLLM", "桌面",
-            "设置 → LLM 首选项 → Generic OpenAI → Base URL、API Key、Chat Model 填下方名称。",
-        ) { b, k, m ->
-            """{"llm":"generic-openai","base_url":"${esc(b)}","api_key":"${esc(k)}","model":"${esc(m)}"}"""
-        },
+            name = "Open WebUI",
+            category = "浏览器",
+            step = "设置 → 连接 → OpenAI API → API Base URL 填 Base URL，API Key 填密钥。",
+            jsonTemplate = { b, k, m ->
+                """{"openai":{"base_url":"${esc(b)}","api_key":"${esc(k)}","model":"${esc(m)}"}}"""
+            },
+        ),
         AccessPreset(
-            "Cline (VS Code)", "编辑器插件",
-            "Cline 设置 → API Provider 选 OpenAI Compatible → Base URL、API Key、Model ID。",
-        ) { b, k, m ->
-            """{"apiProvider":"openai","openAiBaseUrl":"${esc(b)}","openAiApiKey":"${esc(k)}","openAiModelId":"${esc(m)}"}"""
-        },
+            name = "Dify",
+            category = "浏览器",
+            step = "模型供应商 → OpenAI-API-compatible → Base URL 填 Base URL，API Key 填密钥，模型名填下方名称。",
+            jsonTemplate = { b, k, m ->
+                """{"provider":"openai_api_compatible","base_url":"${esc(b)}","api_key":"${esc(k)}","model":"${esc(m)}"}"""
+            },
+        ),
         AccessPreset(
-            "Roo Code", "编辑器插件",
-            "Roo Code 设置 → API Provider 选 OpenAI Compatible → Base URL、API Key、Model。",
-        ) { b, k, m ->
-            """{"apiProvider":"openai","openAiBaseUrl":"${esc(b)}","openAiApiKey":"${esc(k)}","openAiModelId":"${esc(m)}"}"""
-        },
+            name = "LibreChat",
+            category = "浏览器 / 自建",
+            step = "librechat.yaml 的 endpoints.custom 中填写 baseURL、apiKey 与 models.default。",
+            jsonTemplate = { b, k, m ->
+                """{"endpoints":{"custom":[{"name":"PocketGateway","baseURL":"${esc(b)}","apiKey":"${esc(k)}","models":{"default":["${esc(m)}"]}}]}}"""
+            },
+        ),
         AccessPreset(
-            "Cursor", "编辑器",
-            "Settings → Models → OpenAI API Key 填密钥，Override OpenAI Base URL 填 Base URL。",
-        ) { b, k, m ->
-            """{"openai_api_key":"${esc(k)}","openai_base_url":"${esc(b)}","model":"${esc(m)}"}"""
-        },
+            name = "Jan",
+            category = "桌面",
+            step = "设置 → 模型提供商 → OpenAI → 添加自定义提供商，填 Base URL 与 API Key。",
+            jsonTemplate = { b, k, m ->
+                """{"provider":"openai","base_url":"${esc(b)}","api_key":"${esc(k)}","model":"${esc(m)}"}"""
+            },
+        ),
         AccessPreset(
-            "ChatWise", "桌面",
-            "设置 → 模型 → OpenAI → API Host 填 Base URL，API Key 填密钥。",
-        ) { b, k, m ->
-            """{"provider":"openai","apiHost":"${esc(b)}","apiKey":"${esc(k)}","model":"${esc(m)}"}"""
-        },
+            name = "AnythingLLM",
+            category = "桌面",
+            step = "设置 → LLM 首选项 → Generic OpenAI → Base URL、API Key、Chat Model 填下方名称。",
+            jsonTemplate = { b, k, m ->
+                """{"llm":"generic-openai","base_url":"${esc(b)}","api_key":"${esc(k)}","model":"${esc(m)}"}"""
+            },
+        ),
+        AccessPreset(
+            name = "Cline (VS Code)",
+            category = "编辑器插件",
+            step = "Cline 设置 → API Provider 选 OpenAI Compatible → Base URL、API Key、Model ID。",
+            jsonTemplate = { b, k, m ->
+                """{"apiProvider":"openai","openAiBaseUrl":"${esc(b)}","openAiApiKey":"${esc(k)}","openAiModelId":"${esc(m)}"}"""
+            },
+        ),
+        AccessPreset(
+            name = "Roo Code",
+            category = "编辑器插件",
+            step = "Roo Code 设置 → API Provider 选 OpenAI Compatible → Base URL、API Key、Model。",
+            jsonTemplate = { b, k, m ->
+                """{"apiProvider":"openai","openAiBaseUrl":"${esc(b)}","openAiApiKey":"${esc(k)}","openAiModelId":"${esc(m)}"}"""
+            },
+        ),
+        AccessPreset(
+            name = "Cursor",
+            category = "编辑器",
+            step = "Settings → Models → OpenAI API Key 填密钥，Override OpenAI Base URL 填 Base URL。",
+            jsonTemplate = { b, k, m ->
+                """{"openai_api_key":"${esc(k)}","openai_base_url":"${esc(b)}","model":"${esc(m)}"}"""
+            },
+        ),
+        AccessPreset(
+            name = "ChatWise",
+            category = "桌面",
+            step = "设置 → 模型 → OpenAI → API Host 填 Base URL，API Key 填密钥。",
+            jsonTemplate = { b, k, m ->
+                """{"provider":"openai","apiHost":"${esc(b)}","apiKey":"${esc(k)}","model":"${esc(m)}"}"""
+            },
+        ),
     )
 }

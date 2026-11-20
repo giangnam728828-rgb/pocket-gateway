@@ -31,19 +31,25 @@ object RequestThrottle {
         if (wait > 0) delay(wait)
     }
 
-    suspend fun isModelCooling(channelId: String, model: String): Boolean = mutex.withLock {
-        (modelUntil[key(channelId, model)] ?: 0L) > System.currentTimeMillis()
+    suspend fun isModelCooling(channelId: String, model: String?): Boolean = mutex.withLock {
+        val m = model?.trim().orEmpty()
+        if (m.isEmpty()) return@withLock false
+        (modelUntil[key(channelId, m)] ?: 0L) > System.currentTimeMillis()
     }
 
-    suspend fun penalizeModel(channelId: String, model: String, durationMs: Long = 60_000L) =
+    suspend fun penalizeModel(channelId: String, model: String?, durationMs: Long = 60_000L) =
         mutex.withLock {
-            if (model.isBlank()) return@withLock
-            modelUntil[key(channelId, model)] =
+            val m = model?.trim().orEmpty()
+            if (m.isEmpty()) return@withLock
+            modelUntil[key(channelId, m)] =
                 System.currentTimeMillis() + durationMs.coerceIn(10_000L, 30 * 60_000L)
         }
 
-    suspend fun clearModel(channelId: String, model: String) = mutex.withLock {
-        modelUntil.remove(key(channelId, model))
+    suspend fun clearModel(channelId: String, model: String?) = mutex.withLock {
+        val m = model?.trim().orEmpty()
+        if (m.isEmpty()) return@withLock
+        modelUntil.remove(key(channelId, m))
+        Unit
     }
 
     private fun key(channelId: String, model: String) = "$channelId|$model"
