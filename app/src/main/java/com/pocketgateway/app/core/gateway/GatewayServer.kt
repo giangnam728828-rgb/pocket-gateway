@@ -86,6 +86,19 @@ class GatewayServer(
                 post("/v1/chat/completions/stream") { call.handleChat(explicitStream = true) }
                 post("/v1/completions") { call.handleChat(explicitStream = false) }
                 post("/v1/embeddings") { call.handleEmbeddings() }
+
+                // ---- 兼容别名：部分客户端会把 /v1 自行拼上，或只接受不带 /v1 的地址 ----
+                get("/models") { call.handleModels() }
+                post("/chat/completions") { call.handleChat(explicitStream = false) }
+                post("/chat/completions/stream") { call.handleChat(explicitStream = true) }
+                post("/completions") { call.handleChat(explicitStream = false) }
+                post("/embeddings") { call.handleEmbeddings() }
+
+                // ---- 兼容重复前缀：用户误把 /v1 填进会自动追加 /v1 的客户端 ----
+                get("/v1/v1/models") { call.handleModels() }
+                post("/v1/v1/chat/completions") { call.handleChat(explicitStream = false) }
+                post("/v1/v1/completions") { call.handleChat(explicitStream = false) }
+                post("/v1/v1/embeddings") { call.handleEmbeddings() }
             }
         }.also { it.start(wait = false) }
 

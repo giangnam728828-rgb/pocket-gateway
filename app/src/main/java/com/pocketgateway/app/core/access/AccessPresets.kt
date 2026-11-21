@@ -13,6 +13,8 @@ data class AccessPreset(
     val category: String,
     val step: String,
     val jsonTemplate: (baseUrl: String, apiKey: String, model: String) -> String,
+    /** true = 该客户端需要带 /v1 的地址；false = 只填主机地址（客户端会自行追加 /v1）。 */
+    val usesV1: Boolean = true,
 )
 
 /** 内置的 13 款客户端接入预设（均使用 OpenAI 兼容配置）。 */
@@ -28,6 +30,7 @@ object AccessPresets {
             jsonTemplate = { b, k, m ->
                 """{"provider":"openai","apiHost":"${esc(b)}","apiKey":"${esc(k)}","model":"${esc(m)}"}"""
             },
+            usesV1 = false,
         ),
         AccessPreset(
             name = "Cherry Studio",
@@ -36,6 +39,7 @@ object AccessPresets {
             jsonTemplate = { b, k, m ->
                 """{"type":"openai","baseUrl":"${esc(b)}","apiKey":"${esc(k)}","models":["${esc(m)}"]}"""
             },
+            usesV1 = false,
         ),
         AccessPreset(
             name = "LobeChat",
@@ -52,6 +56,7 @@ object AccessPresets {
             jsonTemplate = { b, k, m ->
                 """{"custom":{"baseUrl":"${esc(b)}","apiKey":"${esc(k)}","model":"${esc(m)}"}}"""
             },
+            usesV1 = false,
         ),
         AccessPreset(
             name = "Open WebUI",
@@ -120,10 +125,11 @@ object AccessPresets {
         AccessPreset(
             name = "ChatWise",
             category = "桌面",
-            step = "设置 → 模型 → OpenAI → API Host 填 Base URL，API Key 填密钥。",
+            step = "设置 → 模型 → OpenAI → API Host 填 BASE HOST，API Key 填密钥。",
             jsonTemplate = { b, k, m ->
                 """{"provider":"openai","apiHost":"${esc(b)}","apiKey":"${esc(k)}","model":"${esc(m)}"}"""
             },
+            usesV1 = false,
         ),
     )
 }
