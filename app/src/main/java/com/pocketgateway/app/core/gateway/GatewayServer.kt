@@ -327,6 +327,10 @@ class GatewayServer(
                     if (text.contains("11102")) {
                         RequestThrottle.penalizeModel(channel.id, model)
                     }
+                    if (text.contains("11128")) {
+                        // 渠道级风控：冷却更久，避免持续撞；不要在同次请求里换号重试
+                        cooldown.penalize(channel.id, 429, 120_000L)
+                    }
                     val respHead = text.take(200).replace(Regex("\\s+"), " ")
                     log(cfg, model, channel, st, ok, System.currentTimeMillis() - start,
                         "REQ[$reqDigest] RESP[$respHead]", wantStream)
@@ -378,6 +382,15 @@ class GatewayServer(
                     }
                     if (resp.body.contains("11102")) {
                         RequestThrottle.penalizeModel(channel.id, model)
+                    }
+                    if (resp.body.contains("11128")) {
+                        // 渠道级风控：冷却 2 分钟并中止本次候选轮转（换号重试会放大风控）
+                        cooldown.penalize(channel.id, 429, 120_000L)
+                        return respondError(
+                            HttpStatusCode.BadGateway,
+                            "upstream_risk_control",
+                            "上游渠道风控拦截（11128），请稍后重试",
+                        )
                     }
                     val out = if (resp.status in 200..299) {
                         // 上游只支持流式（非流式返回 11101），非流式客户端在此聚合 SSE
@@ -502,6 +515,14 @@ class GatewayServer(
                 }
                 if (resp.body.contains("11102")) {
                     RequestThrottle.penalizeModel(channel.id, model)
+                }
+                if (resp.body.contains("11128")) {
+                    cooldown.penalize(channel.id, 429, 120_000L)
+                    return respondError(
+                        HttpStatusCode.BadGateway,
+                        "upstream_risk_control",
+                        "上游渠道风控拦截（11128），请稍后重试",
+                    )
                 }
                 log(cfg, model, channel, resp.status, resp.status in 200..299,
                     System.currentTimeMillis() - start, "", false)

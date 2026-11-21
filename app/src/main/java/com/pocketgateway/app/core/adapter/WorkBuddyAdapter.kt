@@ -13,6 +13,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import java.security.MessageDigest
@@ -197,7 +198,9 @@ class WorkBuddyAdapter : ProviderAdapter {
             else -> channel.models.first()
         }
 
-        val msgs: JsonArray = sanitized.messages() ?: buildJsonArray { }
+        val msgs: JsonArray = normalizeMessages(
+            sanitized.messages() ?: buildJsonArray { }
+        )
         val temp = sanitized.string("temperature")
         val maxTokens = sanitized.string("max_tokens")
 
@@ -233,6 +236,35 @@ class WorkBuddyAdapter : ProviderAdapter {
             body = AppJson.encodeToString(JsonObject.serializer(), wb),
             headers = convHeaders,
         )
+    }
+
+    /**
+     * 上游对 messages 做角色白名单校验，命中 `developer` 会直接返回 400 code=11128；
+     * 同时官方客户端要求首条为 system。这里做两件事：
+     *  1. `developer` → `system`（语义等价，不丢内容）；
+     *  2. 首条不是 system 时，前置一条中性 system，避免整批被渠道校验拦截。
+     */
+    private fun normalizeMessages(input: JsonArray): JsonArray {
+        val normalized = input.map { el ->
+            val o = el as? JsonObject ?: return@map el
+            val role = (o["role"] as? JsonPrimitive)?.content
+            if (role.equals("developer", ignoreCase = true)) {
+                JsonObject(o.toMutableMap().apply { put("role", JsonPrimitive("system")) })
+            } else {
+                o
+            }
+        }
+
+        val firstRole = ((normalized.firstOrNull() as? JsonObject)?.get("role") as? JsonPrimitive)?.content
+        return buildJsonArray {
+            if (!firstRole.equals("system", ignoreCase = true)) {
+                add(buildJsonObject {
+                    put("role", JsonPrimitive("system"))
+                    put("content", JsonPrimitive("You are a helpful assistant."))
+                })
+            }
+            normalized.forEach { add(it) }
+        }
     }
 
     override fun transformResponse(channel: Channel, rawBody: String): String? {
