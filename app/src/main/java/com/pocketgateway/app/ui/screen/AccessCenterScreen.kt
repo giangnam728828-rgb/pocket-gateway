@@ -15,6 +15,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -27,6 +28,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.pocketgateway.app.core.access.AccessPreset
 import com.pocketgateway.app.core.access.AccessPresets
+import com.pocketgateway.app.core.appaccount.WorkBuddyApi
+import com.pocketgateway.app.core.model.ProviderType
 import com.pocketgateway.app.ui.viewmodel.GatewayViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -58,6 +61,28 @@ fun AccessCenterScreen(vm: GatewayViewModel) {
     var query by remember { mutableStateOf("") }
     var testing by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<String?>(null) }
+    var refreshing by remember { mutableStateOf(false) }
+    var modelMsg by remember { mutableStateOf<String?>(null) }
+
+    // 模型列表为空时自动尝试拉取（替代已移除的「模型」页的自动刷新）
+    LaunchedEffect(config.channels) {
+        val appChannels = config.channels.filter {
+            it.enabled && it.type == ProviderType.APP_NATIVE && it.models.isEmpty()
+        }
+        if (appChannels.isEmpty()) return@LaunchedEffect
+        refreshing = true
+        var total = 0
+        appChannels.forEach { ch ->
+            WorkBuddyApi.fetchModels(ch).onSuccess { rows ->
+                if (rows.isNotEmpty()) {
+                    vm.upsertChannel(ch.copy(models = rows.map { it.id }))
+                    total += rows.size
+                }
+            }
+        }
+        if (total > 0) modelMsg = "已自动获取 $total 个模型"
+        refreshing = false
+    }
 
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -111,6 +136,38 @@ fun AccessCenterScreen(vm: GatewayViewModel) {
                         style = MaterialTheme.typography.bodySmall,
                         color = if (it.startsWith("正常")) MaterialTheme.colorScheme.primary
                         else MaterialTheme.colorScheme.error,
+                    )
+                }
+
+                OutlinedButton(
+                    enabled = !refreshing && !testing,
+                    onClick = {
+                        refreshing = true
+                        modelMsg = null
+                        scope.launch {
+                            var total = 0
+                            config.channels
+                                .filter { it.enabled && it.type == ProviderType.APP_NATIVE }
+                                .forEach { ch ->
+                                    WorkBuddyApi.fetchModels(ch).onSuccess { rows ->
+                                        if (rows.isNotEmpty()) {
+                                            vm.upsertChannel(ch.copy(models = rows.map { it.id }))
+                                            total += rows.size
+                                        }
+                                    }
+                                }
+                            modelMsg = if (total > 0) "已更新 $total 个模型"
+                            else "未能获取模型，请检查账号登录态或网络"
+                            refreshing = false
+                        }
+                    },
+                ) { Text(if (refreshing) "获取模型中…" else "刷新可用模型") }
+
+                modelMsg?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }

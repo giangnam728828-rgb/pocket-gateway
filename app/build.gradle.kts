@@ -39,8 +39,8 @@ android {
         applicationId = "com.pocketgateway.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 24
-        versionName = "0.21.2"
+        versionCode = 25
+        versionName = "0.21.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -105,6 +105,7 @@ dependencies {
     // --- Ktor Server（内嵌 HTTP 网关，CIO 引擎为纯 Kotlin，可在 Android 运行）---
     implementation("io.ktor:ktor-server-core:$KTOR")
     implementation("io.ktor:ktor-server-cio:$KTOR")
+    implementation("io.ktor:ktor-server-cors:$KTOR")
     implementation("io.ktor:ktor-server-content-negotiation:$KTOR")
     implementation("io.ktor:ktor-server-status-pages:$KTOR")
     implementation("io.ktor:ktor-serialization-kotlinx-json:$KTOR")

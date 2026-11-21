@@ -17,13 +17,16 @@ import com.pocketgateway.app.util.withString
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.OutgoingContent
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.call
+import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
 import io.ktor.server.engine.ApplicationEngine
 import io.ktor.server.engine.embeddedServer
+import io.ktor.server.plugins.cors.routing.CORS
 import io.ktor.server.request.header
 import io.ktor.server.request.httpMethod
 import io.ktor.server.request.path
@@ -78,6 +81,19 @@ class GatewayServer(
         if (server != null) return
         val host = if (config.listenOnAllInterfaces) "0.0.0.0" else "127.0.0.1"
         server = embeddedServer(CIO, host = host, port = config.port) {
+            install(CORS) {
+                // 浏览器/网页版客户端（NextChat Web、LobeChat Web、Open WebUI 等）需要跨域
+                anyHost()
+                allowHeader(HttpHeaders.Authorization)
+                allowHeader(HttpHeaders.ContentType)
+                allowHeader(HttpHeaders.Accept)
+                allowHeader("x-api-key")
+                allowHeader("anthropic-version")
+                allowMethod(HttpMethod.Get)
+                allowMethod(HttpMethod.Post)
+                allowMethod(HttpMethod.Options)
+                allowNonSimpleContentTypes = true
+            }
             routing {
                 get("/") { call.respondInfo() }
                 get("/health") { call.respondText("ok", ContentType.Text.Plain) }
@@ -211,6 +227,18 @@ class GatewayServer(
             ch.models.forEach { m -> ids.add(m) }
             ch.modelMapping.keys.forEach { k -> ids.add(k) }
         }
+        // 模型列表为空时给出可用兜底，否则客户端“获取模型”会判失败/空列表
+        if (ids.isEmpty()) {
+            cfg.channels.filter { it.enabled }.forEach { ch ->
+                if (ch.type == ProviderType.APP_NATIVE) {
+                    ids.add("glm-5.2")
+                    ids.add("deepseek-v4-flash")
+                } else {
+                    ids.add("gpt-4o")
+                }
+            }
+        }
+        if (ids.isEmpty()) ids.add("gpt-4o")
         val data = buildJsonArray {
             ids.forEach { id ->
                 add(buildJsonObject {
