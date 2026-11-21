@@ -70,6 +70,7 @@ fun ChannelEditDialog(
     var signTemplate by remember { mutableStateOf(initial.signTemplate) }
     var signKey by remember { mutableStateOf(initial.signKey) }
     var appKind by remember { mutableStateOf(initial.appKind) }
+    var deviceToken by remember { mutableStateOf(initial.deviceToken) }
     var sanitizeEnabled by remember { mutableStateOf(initial.sanitizeEnabled) }
     var methodExpanded by remember { mutableStateOf(false) }
     var signAlgoExpanded by remember { mutableStateOf(false) }
@@ -281,6 +282,14 @@ fun ChannelEditDialog(
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                     )
+                    OutlinedTextField(
+                        value = deviceToken, onValueChange = { deviceToken = it },
+                        label = { Text("X-Device-Token（可选）") },
+                        placeholder = { Text("留空则不发送该头") },
+                        supportingText = { Text("从官方桌面端登录态获取；有则填写可进一步对齐客户端指纹") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
                     // 请求体净化开关（会改写消息原文中的特定字符串）
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -380,6 +389,7 @@ fun ChannelEditDialog(
                                     authHeader = authHeader.trim(),
                                     extraHeaders = extraHeaders,
                                     appKind = appKind.trim(),
+                                    deviceToken = deviceToken.trim(),
                     sanitizeEnabled = sanitizeEnabled,
                                     pathOverrides = parsePairs(pathOverridesText),
                                 )
@@ -567,6 +577,7 @@ fun ChannelEditDialog(
                     signTemplate = signTemplate,
                     signKey = signKey,
                     appKind = appKind.trim(),
+                    deviceToken = deviceToken.trim(),
                     sanitizeEnabled = sanitizeEnabled,
                     weight = weight.toIntOrNull()?.coerceAtLeast(1) ?: 1,
                     timeoutMs = timeout.toLongOrNull() ?: 0L,

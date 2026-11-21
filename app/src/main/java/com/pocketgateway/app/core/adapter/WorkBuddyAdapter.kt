@@ -44,9 +44,9 @@ class WorkBuddyAdapter : ProviderAdapter {
 
     override fun modelsPath(): String? = "/models"
 
-    /** 对话/通用请求头（三段式 UA）。 */
+    /** 对话/通用请求头（三段式 UA）。会话头由 transformRequest 随 body 一起生成。 */
     override fun defaultAuthHeaders(channel: Channel): List<Pair<String, String>> =
-        buildHeaders(channel, chat = true)
+        buildHeaders(channel, chat = true, includeConversation = false)
 
     /**
      * 解析真实用户 ID。
@@ -95,6 +95,7 @@ class WorkBuddyAdapter : ProviderAdapter {
         chat: Boolean,
         convId: String = newHexId(),
         convReqId: String = newHexId(),
+        includeConversation: Boolean = true,
     ): List<Pair<String, String>> {
         val token = channel.apiKey.trim()
         val uid = resolveUid(channel)
@@ -118,12 +119,10 @@ class WorkBuddyAdapter : ProviderAdapter {
         // 风控闸门头：官方所有 API 必带，缺失会导致边缘 302/拒收
         h.add("X-CodeBuddy-Request" to "1")
         h.add("Accept-Language" to if (global) "en-US" else "zh-CN")
-        // 官方客户端身份头（README 声称已内置，历史版本实际缺失）：
-        // 上游渠道校验会比对平台与版本，缺失或错配会被判为非官方客户端（11128）
-        h.add("X-Client-Platform" to if (global) "workbuddy-web" else "codebuddy-web")
-        h.add("X-App-Version" to CLIENT_VER)
-        h.add("X-Client-Version" to CLIENT_VER)
-        h.add("X-Client-Type" to "web")
+
+        // 注意：官方桌面端不发 X-Client-Platform / X-App-Version / X-Client-Version /
+        // X-Client-Type 这些“web 身份头”。带上它们会与 WorkBuddy/<ver> 桌面 UA 自相矛盾，
+        // 反而被判为非官方客户端（11128/11140）。这里刻意保持与官方桌面端一致。
 
         // 账号级稳定设备标识（uid 为空则不注入，与官方一致）
         if (uid.isNotEmpty()) {
@@ -156,17 +155,23 @@ class WorkBuddyAdapter : ProviderAdapter {
             h.add("X-IDE-Type" to "WorkBuddy")
             h.add("X-IDE-Version" to CLIENT_VER)
             h.add("X-Product" to "WorkBuddy")
-            // 会话头族：X-Conversation-ID 与 body 的 conversationId 保持同一个值
-            val msgId = newHexId()
-            h.add("X-Conversation-ID" to convId)
-            h.add("X-Conversation-Request-ID" to convReqId)
-            h.add("X-Conversation-Message-ID" to msgId)
-            h.add("X-Request-ID" to msgId)
-            h.add("X-Root-Request-ID" to convReqId)
-            h.add("X-Trace-ID" to convReqId)
-            h.add("X-B3-TraceId" to convReqId)
-            h.add("X-B3-SpanId" to msgId.take(16))
-            h.add("X-B3-Sampled" to "1")
+            // 与官方 CLI 一致的缺省约定
+            if (uid.isEmpty()) h.add("X-No-User-Id" to "1")
+            h.add("X-No-Department-Info" to "1")
+
+            if (includeConversation) {
+                // 会话头族：X-Conversation-ID 与 body 的 conversationId 保持同一个值
+                val msgId = newHexId()
+                h.add("X-Conversation-ID" to convId)
+                h.add("X-Conversation-Request-ID" to convReqId)
+                h.add("X-Conversation-Message-ID" to msgId)
+                h.add("X-Request-ID" to msgId)
+                h.add("X-Root-Request-ID" to convReqId)
+                h.add("X-Trace-ID" to convReqId)
+                h.add("X-B3-TraceId" to convReqId)
+                h.add("X-B3-SpanId" to msgId.take(16))
+                h.add("X-B3-Sampled" to "1")
+            }
         }
         return h
     }
@@ -197,6 +202,8 @@ class WorkBuddyAdapter : ProviderAdapter {
         val maxTokens = sanitized.string("max_tokens")
 
         val convId = newHexId()
+        val convReqId = newHexId()
+        val msgId = newHexId()
         val wb = buildJsonObject {
             put("model", JsonPrimitive(resolved))
             put("messages", msgs)
@@ -209,7 +216,23 @@ class WorkBuddyAdapter : ProviderAdapter {
             put("conversationId", JsonPrimitive(convId))
         }
 
-        return RequestPayload(body = AppJson.encodeToString(JsonObject.serializer(), wb))
+        // 会话头与 body 必须同源：由这里统一生成，随 payload 一起发给上游。
+        val convHeaders = mapOf(
+            "X-Conversation-ID" to convId,
+            "X-Conversation-Request-ID" to convReqId,
+            "X-Conversation-Message-ID" to msgId,
+            "X-Request-ID" to msgId,
+            "X-Root-Request-ID" to convReqId,
+            "X-Trace-ID" to convReqId,
+            "X-B3-TraceId" to convReqId,
+            "X-B3-SpanId" to msgId.take(16),
+            "X-B3-Sampled" to "1",
+        )
+
+        return RequestPayload(
+            body = AppJson.encodeToString(JsonObject.serializer(), wb),
+            headers = convHeaders,
+        )
     }
 
     override fun transformResponse(channel: Channel, rawBody: String): String? {
