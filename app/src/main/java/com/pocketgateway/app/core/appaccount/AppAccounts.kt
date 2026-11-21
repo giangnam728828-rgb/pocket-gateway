@@ -98,7 +98,7 @@ class DeviceAuthClient {
             setRequestProperty("X-Requested-With", "XMLHttpRequest")
             setRequestProperty("Origin", origin)
             setRequestProperty("Referer", "$origin/")
-            setRequestProperty("User-Agent", "CLI/2.63.2 CodeBuddy/2.63.2")
+            setRequestProperty("User-Agent", "CLI/2.162.0 CodeBuddy/2.162.0")
             if (method == "POST") doOutput = true
         }
         return try {

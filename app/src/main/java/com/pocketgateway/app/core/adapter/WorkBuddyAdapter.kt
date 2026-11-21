@@ -101,67 +101,43 @@ class WorkBuddyAdapter : ProviderAdapter {
         val token = channel.apiKey.trim()
         val uid = resolveUid(channel)
         val global = channel.baseUrl.contains("workbuddy.ai", ignoreCase = true)
-        val origin = if (global) GLOBAL_ORIGIN else CN_ORIGIN
-        val platform = if (global) "WorkBuddy AI" else "WorkBuddy"
+
+        // CLI 渠道：chat 的 Origin/X-Domain 跟随上游请求域名；计费/任务走 Web 域
+        val chatOrigin = if (global) GLOBAL_ORIGIN else CN_CHAT_ORIGIN
+        val billingOrigin = if (global) GLOBAL_ORIGIN else CN_ORIGIN
+        val origin = if (chat) chatOrigin else billingOrigin
 
         val h = mutableListOf<Pair<String, String>>()
 
-        // —— 公共头 ——
+        // —— 公共头（对齐官方 CodeBuddy CLI 契约）——
         h.add("Content-Type" to "application/json")
-        h.add("Accept" to if (chat) "application/json, text/event-stream" else "application/json")
+        h.add(
+            "Accept" to if (chat) "text/event-stream, application/json"
+            else "application/json, text/plain, */*",
+        )
         h.add("X-Requested-With" to "XMLHttpRequest")
         h.add("Origin" to origin)
         h.add("Referer" to "$origin/")
-        h.add(
-            "User-Agent" to
-                if (chat) "WorkBuddy/$CLIENT_VER $platform/$CLIENT_VER CLI/$CLI_VER"
-                else "WorkBuddy/$CLIENT_VER"
-        )
-        // 风控闸门头：官方所有 API 必带，缺失会导致边缘 302/拒收
+        h.add("User-Agent" to "CLI/$CLI_VER CodeBuddy/$CLI_VER")
         h.add("X-CodeBuddy-Request" to "1")
         h.add("Accept-Language" to if (global) "en-US" else "zh-CN")
 
-        // 注意：官方桌面端不发 X-Client-Platform / X-App-Version / X-Client-Version /
-        // X-Client-Type 这些“web 身份头”。带上它们会与 WorkBuddy/<ver> 桌面 UA 自相矛盾，
-        // 反而被判为非官方客户端（11128/11140）。这里刻意保持与官方桌面端一致。
-
-        // 账号级稳定设备标识（uid 为空则不注入，与官方一致）
-        if (uid.isNotEmpty()) {
-            h.add("X-Machine-ID" to deriveStableId(uid, "machine"))
-            h.add("X-Session-ID" to deriveStableId(uid, "session"))
-        }
-        // 设备令牌（可选）：官方桌面端会带，留空时不发，避免伪造错误值
-        if (channel.deviceToken.isNotBlank()) {
-            h.add("X-Device-Token" to channel.deviceToken.trim())
-        }
-
-        // —— 鉴权 ——
+        // —— 鉴权与账号身份 ——
         if (token.isNotEmpty()) h.add("Authorization" to "Bearer $token")
-        // 有 uid 才发 X-User-Id；缺失时不要发 X-No-User-Id——
-        // 官方客户端从不发这个头，多出来反而暴露非官方身份
-        if (uid.isNotEmpty()) h.add("X-User-Id" to uid)
-
-        // —— 域/企业声明 ——
+        if (uid.isNotEmpty()) h.add("X-User-Id" to uid) else h.add("X-No-User-Id" to "1")
         h.add("X-No-Enterprise-Id" to "1")
-        if (global) {
-            h.add("X-Domain" to "www.workbuddy.ai")
-        } else {
-            h.add("X-Domain" to "www.codebuddy.cn")
-        }
+        h.add("X-Product" to "SaaS")
 
-        // —— 对话专属 ——
         if (chat) {
-            h.add("X-Agent-Purpose" to "conversation")
-            h.add("X-IDE-Name" to "WorkBuddy")
-            h.add("X-IDE-Type" to "WorkBuddy")
-            h.add("X-IDE-Version" to CLIENT_VER)
-            h.add("X-Product" to "WorkBuddy")
-            // 与官方 CLI 一致的缺省约定
-            if (uid.isEmpty()) h.add("X-No-User-Id" to "1")
-            h.add("X-No-Department-Info" to "1")
+            // 官方 CLI chat 指纹（缺一项都可能命中 11128 unapproved channel）
+            h.add("X-Agent-Intent" to "craft")
+            h.add("X-IDE-Type" to "CLI")
+            h.add("X-IDE-Name" to "CLI")
+            h.add("X-IDE-Version" to CLI_VER)
+            h.add("X-Domain" to (if (global) "www.workbuddy.ai" else "copilot.tencent.com"))
 
             if (includeConversation) {
-                // 会话头族：X-Conversation-ID 与 body 的 conversationId 保持同一个值
+                // 会话头与 body 的 conversationId 由 transformRequest 同源生成
                 val msgId = newHexId()
                 h.add("X-Conversation-ID" to convId)
                 h.add("X-Conversation-Request-ID" to convReqId)
@@ -173,6 +149,14 @@ class WorkBuddyAdapter : ProviderAdapter {
                 h.add("X-B3-SpanId" to msgId.take(16))
                 h.add("X-B3-Sampled" to "1")
             }
+        } else {
+            // 计费/签到/任务：无部门信息
+            h.add("X-No-Department-Info" to "1")
+        }
+
+        // 可选设备令牌：仅用户显式填写时发送
+        if (channel.deviceToken.isNotBlank()) {
+            h.add("X-Device-Token" to channel.deviceToken.trim())
         }
         return h
     }
@@ -247,12 +231,29 @@ class WorkBuddyAdapter : ProviderAdapter {
     private fun normalizeMessages(input: JsonArray): JsonArray {
         val normalized = input.map { el ->
             val o = el as? JsonObject ?: return@map el
+            var msg = o
             val role = (o["role"] as? JsonPrimitive)?.content
             if (role.equals("developer", ignoreCase = true)) {
-                JsonObject(o.toMutableMap().apply { put("role", JsonPrimitive("system")) })
-            } else {
-                o
+                msg = JsonObject(msg.toMutableMap().apply { put("role", JsonPrimitive("system")) })
             }
+
+            val content = msg["content"]
+            val text = contentText(content)
+            val isSystem = (msg["role"] as? JsonPrimitive)?.content.equals("system", ignoreCase = true)
+            if (isSystem && text.isNotBlank() &&
+                !PROMPT_WHITELIST.containsMatchIn(text) && AGENT_PROMPT.containsMatchIn(text)
+            ) {
+                // 客户端身份提示词（Claude Code / Cursor / Cline / DSH 等）会被 WAF 判为
+                // 非官方客户端 → 11128；替换为中性提示词，避免整单被拦。
+                msg = JsonObject(msg.toMutableMap().apply {
+                    put("content", JsonPrimitive(NEUTRAL_PROMPT))
+                })
+            } else if (content != null) {
+                msg = JsonObject(msg.toMutableMap().apply {
+                    put("content", sanitizeDshContent(content))
+                })
+            }
+            msg
         }
 
         val firstRole = ((normalized.firstOrNull() as? JsonObject)?.get("role") as? JsonPrimitive)?.content
@@ -266,6 +267,37 @@ class WorkBuddyAdapter : ProviderAdapter {
             normalized.forEach { add(it) }
         }
     }
+
+    private fun contentText(content: JsonElement?): String = when (content) {
+        is JsonPrimitive -> content.content
+        is JsonArray -> content.joinToString("\n") { part ->
+            val t = (part as? JsonObject)?.get("text") as? JsonPrimitive
+            t?.content ?: ""
+        }
+        else -> ""
+    }
+
+    /** WAF 会逐字拦截 "DeepSeek Harness"，插入零宽空格但保留语义。 */
+    private fun sanitizeDshContent(content: JsonElement): JsonElement = when (content) {
+        is JsonPrimitive -> if (content.isString) JsonPrimitive(sanitizeDsh(content.content)) else content
+        is JsonArray -> buildJsonArray {
+            content.forEach { part ->
+                val o = part as? JsonObject
+                val t = o?.get("text") as? JsonPrimitive
+                if (o != null && t != null && t.isString) {
+                    add(JsonObject(o.toMutableMap().apply {
+                        put("text", JsonPrimitive(sanitizeDsh(t.content)))
+                    }))
+                } else {
+                    add(part)
+                }
+            }
+        }
+        else -> content
+    }
+
+    private fun sanitizeDsh(text: String): String =
+        DSH_PATTERN.replace(text) { m -> "DeepSeek\u200B" + m.groupValues[1] + "Harness" }
 
     /**
      * 会话 ID 稳定性：官方客户端一次对话内所有请求复用同一个 conversationId。
@@ -420,13 +452,36 @@ class WorkBuddyAdapter : ProviderAdapter {
         /** 已知的 appKind 类型标识（这些值代表适配器类型，不是用户 ID）。 */
         val KNOWN_APP_KINDS = setOf("workbuddy", "codebuddy", "workbuddyai", "workbuddy_ai", "")
 
-        const val CLIENT_VER = "5.5.4"
-        const val CLI_VER = "2.137.1"
+        const val CLIENT_VER = "2.162.0"
+        const val CLI_VER = "2.162.0"
         const val CN_ORIGIN = "https://www.codebuddy.cn"
+        const val CN_CHAT_ORIGIN = "https://copilot.tencent.com"
         const val GLOBAL_ORIGIN = "https://www.workbuddy.ai"
 
         /** 32 位 hex ID（UUID 去横线）。 */
         fun newHexId(): String = UUID.randomUUID().toString().replace("-", "")
+
+        /** 客户端身份提示词特征：命中即可能触发 11128。 */
+        private val AGENT_PROMPT = Regex(
+            "(?i)you are claude code|claude.{0,20}code.{0,40}official.{0,20}cli|" +
+                "anthropic.{0,30}official.{0,30}cli|" +
+                "you are (cursor|windsurf|cline|aider|continue|copilot|cody)|" +
+                "you are an? (ai )?(coding |code )?agent|cc_entrypoint\\s*=|" +
+                "you are .{0,30}(powerful )?ai agent|orchestration capabilities|" +
+                "ohmyopencode|<agent-identity>|<role>|<behavior_instructions>|" +
+                "deepseek[\\s_-]*harness",
+        )
+
+        /** 自家网关/系统指令白名单，不替换。 */
+        private val PROMPT_WHITELIST = Regex(
+            "(?i)hermes|10router|9router|claude code by anthropic|system instructions|你的身份|你的角色设定",
+        )
+
+        private const val NEUTRAL_PROMPT =
+            "You are CodeBuddy Code.You are an interactive CLI tool that helps users with software engineering tasks."
+
+        /** WAF 逐字拦截 "DeepSeek Harness"（含空格/连字符变体）。 */
+        private val DSH_PATTERN = Regex("(?i)deepseek([\\s_-]*)harness")
 
         /** 账号级稳定派生：sha256("wb2a:<purpose>:<uid>") 取 36 hex，与官方实现同口径。 */
         fun deriveStableId(uid: String, purpose: String): String {
