@@ -2,6 +2,7 @@ package com.pocketgateway.app.ui.screen
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,9 +18,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -41,6 +47,7 @@ import com.pocketgateway.app.core.appaccount.DeviceAuthClient
 import com.pocketgateway.app.core.appaccount.LoginSession
 import com.pocketgateway.app.core.appaccount.WorkBuddyApi
 import com.pocketgateway.app.core.appaccount.buildAppChannel
+import com.pocketgateway.app.core.model.AccountMode
 import com.pocketgateway.app.core.model.Channel
 import com.pocketgateway.app.core.model.ProviderType
 import com.pocketgateway.app.ui.viewmodel.GatewayViewModel
@@ -49,6 +56,7 @@ import kotlinx.coroutines.launch
 /**
  * 账号页：OAuth 设备授权登录 + 账号卡片（UID / 积分 / 进度条 / 状态）。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AppAccountScreen(vm: GatewayViewModel) {
     val config by vm.config.collectAsState()
@@ -64,7 +72,13 @@ fun AppAccountScreen(vm: GatewayViewModel) {
     var showManual by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<Channel?>(null) }
 
-    val appCh = config.channels.firstOrNull { it.type == ProviderType.APP_NATIVE }
+    val appAccounts = config.channels.filter { it.type == ProviderType.APP_NATIVE }
+    val preferredAccount = appAccounts.firstOrNull { it.id == config.preferredAccountId }
+    val appCh = if (config.accountMode == AccountMode.SINGLE && preferredAccount != null) {
+        preferredAccount
+    } else {
+        appAccounts.firstOrNull()
+    }
 
     var info by remember { mutableStateOf<WorkBuddyApi.AccountInfo?>(null) }
     var loadingInfo by remember { mutableStateOf(false) }
@@ -227,6 +241,107 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                     style = MaterialTheme.typography.bodySmall) }
                 errorMsg?.let { Text(it, color = MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.bodySmall) }
+            }
+        }
+
+        // 账号路由：账号池轮询 / 固定账号
+        if (appAccounts.isNotEmpty()) {
+            val active = appAccounts.filter { it.enabled }
+            val strategyLabel = when (config.routeStrategy) {
+                com.pocketgateway.app.core.model.RouteStrategy.ROUND_ROBIN -> "轮询"
+                com.pocketgateway.app.core.model.RouteStrategy.RANDOM -> "随机"
+                com.pocketgateway.app.core.model.RouteStrategy.FIRST -> "优先第一个"
+            }
+            val fixedOk = config.accountMode == AccountMode.SINGLE &&
+                preferredAccount != null && preferredAccount.enabled
+            val weightText = if (active.size > 1) {
+                active.joinToString(" / ") { ch -> "${ch.name}:${ch.weight}" }
+            } else ""
+
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("账号路由", style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold)
+                    Text(
+                        when {
+                            fixedOk -> "当前：固定使用「${preferredAccount!!.name}」"
+                            config.accountMode == AccountMode.SINGLE ->
+                                "当前：固定账号不可用，已回退为账号池（${active.size} 个启用账号）"
+                            else -> "当前：账号池 ${active.size} 个启用账号，按「$strategyLabel」分配" +
+                                if (weightText.isNotEmpty()) "（权重 $weightText）" else ""
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = config.accountMode == AccountMode.POOL,
+                            onClick = { vm.updateConfig { it.copy(accountMode = AccountMode.POOL) } },
+                            label = { Text("账号池轮询") },
+                        )
+                        FilterChip(
+                            selected = config.accountMode == AccountMode.SINGLE,
+                            onClick = {
+                                vm.updateConfig {
+                                    it.copy(
+                                        accountMode = AccountMode.SINGLE,
+                                        preferredAccountId = it.preferredAccountId.ifBlank {
+                                            appAccounts.firstOrNull()?.id.orEmpty()
+                                        },
+                                    )
+                                }
+                            },
+                            label = { Text("固定账号") },
+                        )
+                    }
+
+                    HorizontalDivider()
+
+                    appAccounts.forEach { ch ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                vm.updateConfig {
+                                    it.copy(accountMode = AccountMode.SINGLE, preferredAccountId = ch.id)
+                                }
+                            },
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            RadioButton(
+                                selected = config.accountMode == AccountMode.SINGLE &&
+                                    config.preferredAccountId == ch.id,
+                                onClick = null,
+                            )
+                            Column(Modifier.weight(1f)) {
+                                Text(ch.name, style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "UID ${ch.appKind.ifBlank { "—" }} · 权重 ${ch.weight}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Switch(
+                                checked = ch.enabled,
+                                onCheckedChange = { en ->
+                                    vm.updateConfig { cfg ->
+                                        cfg.copy(channels = cfg.channels.map {
+                                            if (it.id == ch.id) it.copy(enabled = en) else it
+                                        })
+                                    }
+                                },
+                            )
+                        }
+                    }
+
+                    Text(
+                        "说明：多个账号默认按权重轮询；选「固定账号」后，只有该账号参与路由。" +
+                            "关闭开关的账号不会收到请求。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
 

@@ -163,6 +163,20 @@ class GatewayServer(
 
     private fun selectChannels(cfg: GatewayConfig, model: String?): List<Channel> {
         var list = cfg.channels.filter { it.enabled && it.baseUrl.isNotBlank() }
+
+        // 固定账号模式：APP_NATIVE 只保留指定账号；该账号不可用时回退到账号池，
+        // 避免用户误把唯一账号停用后整条链路无路可走。非 APP 渠道不受影响。
+        if (cfg.accountMode == com.pocketgateway.app.core.model.AccountMode.SINGLE) {
+            val preferred = list.find {
+                it.type == ProviderType.APP_NATIVE && it.id == cfg.preferredAccountId
+            }
+            if (preferred != null) {
+                list = list.filter {
+                    it.type != ProviderType.APP_NATIVE || it.id == preferred.id
+                }
+            }
+        }
+
         if (!model.isNullOrBlank()) {
             val exact = list.filter { ch ->
                 ch.models.isEmpty() || ch.models.contains(model) || ch.modelMapping.containsKey(model)

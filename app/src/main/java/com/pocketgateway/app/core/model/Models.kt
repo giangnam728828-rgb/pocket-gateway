@@ -45,6 +45,16 @@ enum class RouteStrategy {
     ;
 }
 
+/** APP 直连账号的路由模式。 */
+@Serializable
+enum class AccountMode {
+    /** 多账号按路由策略轮询（默认）。 */
+    @SerialName("pool") POOL,
+
+    /** 只使用 preferredAccountId 指定的账号；该账号不可用时回退到账号池。 */
+    @SerialName("single") SINGLE,
+}
+
 /**
  * 一个"渠道"= 一个可被转发的上游模型服务。
  *
@@ -204,6 +214,12 @@ data class GatewayConfig(
 
     /** 路由策略。 */
     val routeStrategy: RouteStrategy = RouteStrategy.ROUND_ROBIN,
+
+    /** APP 直连账号路由模式：账号池轮询 / 固定账号。 */
+    val accountMode: AccountMode = AccountMode.POOL,
+
+    /** 固定账号模式下的目标渠道 ID（APP_NATIVE）。 */
+    val preferredAccountId: String = "",
 
     /** 渠道列表。 */
     val channels: List<Channel> = emptyList(),
