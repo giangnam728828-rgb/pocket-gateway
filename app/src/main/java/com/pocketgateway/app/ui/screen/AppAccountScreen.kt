@@ -261,8 +261,8 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                     Text("其他平台账号（API Key）", style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold)
                     Text(
-                        "WorkBuddy 用 OAuth 登录；OpenAI / Claude / Gemini / DeepSeek 等其他平台直接填 API Key 即可，" +
-                            "不需要登录它们的客户端。",
+                        "WorkBuddy 用 OAuth 登录；OpenAI / Claude / Gemini / DeepSeek 等其他平台直接填 API Key 即可。" +
+                            "只能登录、不提供 API Key 的客户端（如 TRAE）无法作为上游接入。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

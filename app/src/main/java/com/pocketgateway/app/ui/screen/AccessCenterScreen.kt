@@ -7,13 +7,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -43,10 +40,9 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * 接入中心：把网关地址、密钥、模型名与常见客户端的配置一次给全。
- * 替代原来的「模型」Tab。
+ * 接入中心：把网关地址、密钥与常见客户端的配置一次给全。
+ * 只适用于「支持自定义 OpenAI 兼容地址 + API Key」的客户端。
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AccessCenterScreen(vm: GatewayViewModel) {
     val config by vm.config.collectAsState()
@@ -58,19 +54,6 @@ fun AccessCenterScreen(vm: GatewayViewModel) {
     val baseUrl = vm.baseUrl.value            // 含 /v1
     val hostUrl = baseUrl.removeSuffix("/v1") // 不含 /v1
     val apiKey = config.accessToken
-    val allModels = config.channels
-        .filter { it.enabled }
-        .flatMap { ch -> ch.models + ch.modelMapping.keys }
-        .distinct()
-    var selectedModel by remember { mutableStateOf("") }
-    LaunchedEffect(allModels) {
-        if (selectedModel !in allModels) {
-            selectedModel = allModels.firstOrNull().orEmpty()
-        }
-    }
-    val model = selectedModel.ifBlank {
-        config.channels.firstOrNull { it.models.isNotEmpty() }?.models?.firstOrNull() ?: "gpt-4o"
-    }
 
     var query by remember { mutableStateOf("") }
     var testing by remember { mutableStateOf(false) }
@@ -81,7 +64,7 @@ fun AccessCenterScreen(vm: GatewayViewModel) {
         mutableStateOf(config.listenOnAllInterfaces)
     }
 
-    // 模型列表为空时自动尝试拉取（替代已移除的「模型」页的自动刷新）
+    // 静默同步模型列表（供客户端「获取模型」使用），界面不再展示模型
     LaunchedEffect(config.channels) {
         val appChannels = config.channels.filter {
             it.enabled && it.type == ProviderType.APP_NATIVE && it.models.isEmpty()
@@ -97,7 +80,7 @@ fun AccessCenterScreen(vm: GatewayViewModel) {
                 }
             }
         }
-        if (total > 0) modelMsg = "已自动获取 $total 个模型"
+        if (total > 0) modelMsg = "已同步 $total 个模型，客户端可「获取模型」"
         refreshing = false
     }
 
@@ -117,28 +100,6 @@ fun AccessCenterScreen(vm: GatewayViewModel) {
                 InfoLine("API HOST（不含 /v1）", hostUrl) { copyToClipboard(ctx, hostUrl) }
                 InfoLine("API KEY", apiKey.ifBlank { "未设置（网关不鉴权）" }) {
                     copyToClipboard(ctx, apiKey)
-                }
-                InfoLine("模型", model) { copyToClipboard(ctx, model) }
-
-                if (allModels.size > 1) {
-                    Text(
-                        "可用模型（点选后，下面所有客户端的配置会跟着切换）",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        allModels.forEach { m ->
-                            FilterChip(
-                                selected = m == model,
-                                onClick = { selectedModel = m },
-                                label = { Text(m) },
-                            )
-                        }
-                    }
                 }
 
                 if (!running) {
@@ -221,12 +182,12 @@ fun AccessCenterScreen(vm: GatewayViewModel) {
                                         }
                                     }
                                 }
-                            modelMsg = if (total > 0) "已更新 $total 个模型"
-                            else "未能获取模型，请检查账号登录态或网络"
+                            modelMsg = if (total > 0) "已同步 $total 个模型，客户端可「获取模型」"
+                            else "未能同步模型，请检查账号登录态或网络"
                             refreshing = false
                         }
                     },
-                ) { Text(if (refreshing) "获取模型中…" else "刷新可用模型") }
+                ) { Text(if (refreshing) "同步模型中…" else "同步模型列表") }
 
                 modelMsg?.let {
                     Text(
@@ -238,23 +199,16 @@ fun AccessCenterScreen(vm: GatewayViewModel) {
             }
         }
 
-        // 按账号展示模型，切换账号/平台后自动刷新
-        val channelModels = config.channels.filter { it.enabled && it.models.isNotEmpty() }
-        if (channelModels.isNotEmpty()) {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("可用模型（按账号）", style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold)
-                    channelModels.forEach { ch ->
-                        Text(ch.name, style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold)
-                        Text(
-                            ch.models.joinToString(" / "),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("哪些客户端能接入？", style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold)
+                Text(
+                    "只有「支持自定义 OpenAI 兼容地址 + API Key」的客户端能接入。" +
+                        "TRAE 这类只能账号登录、不能填写自定义 API 的客户端无法接入本网关。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
 
@@ -272,7 +226,7 @@ fun AccessCenterScreen(vm: GatewayViewModel) {
         }
 
         presets.forEach { preset ->
-            PresetCard(preset, baseUrl, hostUrl, apiKey, model)
+            PresetCard(preset, baseUrl, hostUrl, apiKey)
         }
 
         Text(
@@ -290,11 +244,9 @@ private fun PresetCard(
     baseUrl: String,
     hostUrl: String,
     apiKey: String,
-    model: String,
 ) {
     val ctx = LocalContext.current
     var expanded by remember { mutableStateOf(false) }
-    // 该客户端应填写的地址形态
     val url = if (preset.usesV1) baseUrl else hostUrl
 
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -321,9 +273,8 @@ private fun PresetCard(
                     url,
                 ) { copyToClipboard(ctx, url) }
                 InfoLine("API KEY", apiKey.ifBlank { "未设置" }) { copyToClipboard(ctx, apiKey) }
-                InfoLine("模型", model) { copyToClipboard(ctx, model) }
                 OutlinedButton(onClick = {
-                    copyToClipboard(ctx, preset.jsonTemplate(url, apiKey, model))
+                    copyToClipboard(ctx, preset.jsonTemplate(url, apiKey))
                 }) { Text("复制 JSON 配置") }
             }
         }
