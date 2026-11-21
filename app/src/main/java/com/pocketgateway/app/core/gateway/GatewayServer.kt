@@ -4,6 +4,9 @@ import com.pocketgateway.app.core.adapter.AdapterRegistry
 import com.pocketgateway.app.core.adapter.ProviderAdapter
 import com.pocketgateway.app.core.adapter.RequestPayload
 import com.pocketgateway.app.core.adapter.StreamConverter
+import com.pocketgateway.app.core.appaccount.TraeApi
+import com.pocketgateway.app.core.appaccount.TraeAuth
+import com.pocketgateway.app.core.appaccount.TraeTextAccumulator
 import com.pocketgateway.app.core.model.Channel
 import com.pocketgateway.app.core.model.GatewayConfig
 import com.pocketgateway.app.core.model.ProviderType
@@ -44,6 +47,8 @@ import io.ktor.utils.io.writeStringUtf8
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -244,11 +249,13 @@ class GatewayServer(
         // 模型列表为空时给出可用兜底，否则客户端“获取模型”会判失败/空列表
         if (ids.isEmpty()) {
             cfg.channels.filter { it.enabled }.forEach { ch ->
-                if (ch.type == ProviderType.APP_NATIVE) {
-                    ids.add("glm-5.2")
-                    ids.add("deepseek-v4-flash")
-                } else {
-                    ids.add("gpt-4o")
+                when (ch.type) {
+                    ProviderType.APP_NATIVE -> {
+                        ids.add("glm-5.2")
+                        ids.add("deepseek-v4-flash")
+                    }
+                    ProviderType.TRAE -> ids.add("auto")
+                    else -> ids.add("gpt-4o")
                 }
             }
         }
@@ -381,6 +388,138 @@ class GatewayServer(
                 } catch (e: Exception) {
                     lastError = e.message ?: e::class.java.simpleName
                     log(cfg, model, channel, 0, false, System.currentTimeMillis() - start, lastError, wantStream)
+                    continue
+                }
+            }
+
+            // TRAE 账号直连：两步协议（创建会话 → 订阅事件流），失败时用 refreshToken 自动续期
+            if (channel.type == ProviderType.TRAE) {
+                if (channel.apiKey.isBlank()) {
+                    return respondError(
+                        HttpStatusCode.Unauthorized,
+                        "trae_login_required",
+                        "TRAE 账号未登录：请到「账号」页完成 TRAE 登录。",
+                    )
+                }
+                val rl = RequestThrottle.acquire(channel.id)
+                if (rl > 0) {
+                    return respondError(
+                        HttpStatusCode.TooManyRequests,
+                        "local_rate_limit",
+                        "本机网关限流（${rl / 1000}s 后重试），避免账号触发上游风控",
+                    )
+                }
+                RequestThrottle.before(channel.id)
+                var traeChannel = channel
+                try {
+                    var stream = TraeApi.open(traeChannel, body, timeout)
+                    if (stream.status == 401 || stream.status == 403) {
+                        stream.close()
+                        val refreshed = TraeAuth.refresh(traeChannel)
+                        if (refreshed != null) {
+                            traeChannel = traeChannel.copy(
+                                apiKey = refreshed.token,
+                                refreshToken = refreshed.refreshToken.ifBlank { traeChannel.refreshToken },
+                                appKind = traeChannel.appKind.ifBlank { refreshed.uid },
+                            )
+                            configStore.upsertChannel(traeChannel)
+                            stream = TraeApi.open(traeChannel, body, timeout)
+                        }
+                    }
+                    if (stream.status !in 200..299) {
+                        val st = stream.status
+                        val errBody = stream.errorBody
+                        stream.close()
+                        if (st == 429 || st == 403) cooldown.penalize(traeChannel.id, st)
+                        log(
+                            cfg, model, traeChannel, st, false,
+                            System.currentTimeMillis() - start, "TRAE: ${truncate(errBody, 200)}", wantStream,
+                        )
+                        lastError = "TRAE HTTP $st: ${truncate(errBody, 160)}"
+                        continue
+                    }
+
+                    cooldown.clear(traeChannel.id)
+                    RequestThrottle.clearModel(traeChannel.id, model)
+                    response.header("X-PocketGateway-Channel", traeChannel.name)
+                    val outModel = model?.takeIf { it.isNotBlank() }
+                        ?: traeChannel.models.firstOrNull().orEmpty().ifBlank { "trae" }
+
+                    if (wantStream) {
+                        response.header(HttpHeaders.CacheControl, "no-cache")
+                        response.header("X-Accel-Buffering", "no")
+                        respond(object : OutgoingContent.WriteChannelContent() {
+                            override val contentType: ContentType? = ContentType.Text.EventStream
+                            override val status: HttpStatusCode? = HttpStatusCode.OK
+
+                            override suspend fun writeTo(channelOut: ByteWriteChannel) {
+                                val acc = TraeTextAccumulator()
+                                var emitted = 0
+                                var streamError = ""
+                                try {
+                                    withContext(Dispatchers.IO) {
+                                        while (true) {
+                                            val event = stream.nextEvent() ?: break
+                                            if (event.name in TraeApi.HEARTBEATS) {
+                                                channelOut.writeStringUtf8(": keepalive\n\n")
+                                                channelOut.flush()
+                                                continue
+                                            }
+                                            if (event.name == "done") break
+                                            if (event.name == "error") {
+                                                streamError = TraeApi.errorMessage(event.data)
+                                                break
+                                            }
+                                            val delta = acc.accept(event)
+                                            if (delta.isNotEmpty()) {
+                                                channelOut.writeStringUtf8(TraeApi.chunk(delta, outModel))
+                                                channelOut.flush()
+                                                emitted += delta.length
+                                            }
+                                        }
+                                    }
+                                    if (streamError.isNotBlank()) {
+                                        channelOut.writeStringUtf8(TraeApi.errorChunk(streamError))
+                                    }
+                                    channelOut.writeStringUtf8(TraeApi.finalChunk(outModel))
+                                    channelOut.writeStringUtf8("data: [DONE]\n\n")
+                                    channelOut.flush()
+                                } finally {
+                                    stream.close()
+                                    this@handleChat.log(
+                                        cfg, model, traeChannel, 200, streamError.isBlank(),
+                                        System.currentTimeMillis() - start,
+                                        if (streamError.isBlank()) "TRAE stream chars=$emitted"
+                                        else "TRAE stream error: $streamError",
+                                        true,
+                                    )
+                                }
+                            }
+                        })
+                    } else {
+                        val agg = withContext(Dispatchers.IO) { TraeApi.readAggregate(stream) }
+                        stream.close()
+                        if (agg.text.isBlank() && agg.error.isNotBlank()) {
+                            log(
+                                cfg, model, traeChannel, 502, false,
+                                System.currentTimeMillis() - start, "TRAE: ${truncate(agg.error, 200)}", false,
+                            )
+                            lastError = "TRAE: ${truncate(agg.error, 160)}"
+                            continue
+                        }
+                        log(
+                            cfg, model, traeChannel, 200, true,
+                            System.currentTimeMillis() - start, "TRAE chars=${agg.text.length}", false,
+                        )
+                        respondText(TraeApi.openAiResponse(agg.text, outModel), ContentType.Application.Json)
+                    }
+                    return
+                } catch (e: Exception) {
+                    lastError = e.message ?: e::class.java.simpleName
+                    log(
+                        cfg, model, traeChannel, 0, false,
+                        System.currentTimeMillis() - start, lastError, wantStream,
+                    )
                     continue
                 }
             }

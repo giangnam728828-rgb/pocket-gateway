@@ -71,6 +71,7 @@ fun ChannelEditDialog(
     var signKey by remember { mutableStateOf(initial.signKey) }
     var appKind by remember { mutableStateOf(initial.appKind) }
     var deviceToken by remember { mutableStateOf(initial.deviceToken) }
+    var refreshToken by remember { mutableStateOf(initial.refreshToken) }
     var sanitizeEnabled by remember { mutableStateOf(initial.sanitizeEnabled) }
     var methodExpanded by remember { mutableStateOf(false) }
     var signAlgoExpanded by remember { mutableStateOf(false) }
@@ -251,7 +252,7 @@ fun ChannelEditDialog(
                     }
                 }
 
-                if (type != ProviderType.APP_NATIVE) {
+                if (type != ProviderType.APP_NATIVE && type != ProviderType.TRAE) {
                     OutlinedTextField(
                         value = baseUrl, onValueChange = { baseUrl = it },
                         label = { Text("Base URL") },
@@ -263,15 +264,35 @@ fun ChannelEditDialog(
 
                 OutlinedTextField(
                     value = apiKey, onValueChange = { apiKey = it },
-                    label = { Text(if (type == ProviderType.APP_NATIVE) "账号凭证（Cookie/Token）" else "API Key（可留空）") },
+                    label = {
+                        Text(
+                            when (type) {
+                                ProviderType.APP_NATIVE -> "账号凭证（Cookie/Token）"
+                                ProviderType.TRAE -> "UserJWT（登录凭证）"
+                                else -> "API Key（可留空）"
+                            }
+                        )
+                    },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     supportingText = {
-                        if (type == ProviderType.APP_NATIVE) {
-                            Text("登录 APP 后复制 Cookie 或 Token；APP 直连无需 URL 与 API Key")
+                        when (type) {
+                            ProviderType.APP_NATIVE -> Text("登录 APP 后复制 Cookie 或 Token；APP 直连无需 URL 与 API Key")
+                            ProviderType.TRAE -> Text("在「账号」页登录 TRAE 后自动写入；也可手动粘贴 UserJWT")
+                            else -> {}
                         }
                     },
                 )
+
+                if (type == ProviderType.TRAE) {
+                    OutlinedTextField(
+                        value = refreshToken, onValueChange = { refreshToken = it },
+                        label = { Text("RefreshToken（用于自动续期）") },
+                        supportingText = { Text("登录 TRAE 时自动保存；UserJWT 过期后用它换取新的 Token") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                }
 
                 if (type == ProviderType.APP_NATIVE) {
                     OutlinedTextField(
@@ -578,6 +599,7 @@ fun ChannelEditDialog(
                     signKey = signKey,
                     appKind = appKind.trim(),
                     deviceToken = deviceToken.trim(),
+                    refreshToken = refreshToken.trim(),
                     sanitizeEnabled = sanitizeEnabled,
                     weight = weight.toIntOrNull()?.coerceAtLeast(1) ?: 1,
                     timeoutMs = timeout.toLongOrNull() ?: 0L,

@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.pocketgateway.app.core.access.AccessPreset
 import com.pocketgateway.app.core.access.AccessPresets
+import com.pocketgateway.app.core.appaccount.TraeApi
 import com.pocketgateway.app.core.appaccount.WorkBuddyApi
 import com.pocketgateway.app.core.model.ProviderType
 import com.pocketgateway.app.ui.viewmodel.GatewayViewModel
@@ -66,14 +67,25 @@ fun AccessCenterScreen(vm: GatewayViewModel) {
 
     // 静默同步模型列表（供客户端「获取模型」使用），界面不再展示模型
     LaunchedEffect(config.channels) {
-        val appChannels = config.channels.filter {
+        val wbChannels = config.channels.filter {
             it.enabled && it.type == ProviderType.APP_NATIVE && it.models.isEmpty()
         }
-        if (appChannels.isEmpty()) return@LaunchedEffect
+        val traeChannels = config.channels.filter {
+            it.enabled && it.type == ProviderType.TRAE && it.models.isEmpty()
+        }
+        if (wbChannels.isEmpty() && traeChannels.isEmpty()) return@LaunchedEffect
         refreshing = true
         var total = 0
-        appChannels.forEach { ch ->
+        wbChannels.forEach { ch ->
             WorkBuddyApi.fetchModels(ch).onSuccess { rows ->
+                if (rows.isNotEmpty()) {
+                    vm.upsertChannel(ch.copy(models = rows.map { it.id }))
+                    total += rows.size
+                }
+            }
+        }
+        traeChannels.forEach { ch ->
+            TraeApi.fetchModels(ch).onSuccess { rows ->
                 if (rows.isNotEmpty()) {
                     vm.upsertChannel(ch.copy(models = rows.map { it.id }))
                     total += rows.size

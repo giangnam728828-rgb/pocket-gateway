@@ -10,6 +10,7 @@ object AdapterRegistry {
     private val gemini = GeminiAdapter()
     private val custom = CustomPassthroughAdapter()
     private val workbuddy = WorkBuddyAdapter()
+    private val trae = TraeAdapter()
 
     fun get(type: ProviderType): ProviderAdapter = when (type) {
         ProviderType.OPENAI_COMPAT -> openai
@@ -17,6 +18,7 @@ object AdapterRegistry {
         ProviderType.GEMINI -> gemini
         ProviderType.CUSTOM -> custom
         ProviderType.APP_NATIVE -> workbuddy
+        ProviderType.TRAE -> trae
     }
 
     fun get(channel: Channel): ProviderAdapter = get(channel.type)

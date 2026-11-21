@@ -30,6 +30,11 @@ object ModelFetcher {
             val r = com.pocketgateway.app.core.appaccount.WorkBuddyApi.fetchModels(channel)
             return@withContext r.map { rows -> rows.map { it.id } }
         }
+        // TRAE 的模型目录结构特殊，走专用解析
+        if (channel.type == com.pocketgateway.app.core.model.ProviderType.TRAE) {
+            val r = com.pocketgateway.app.core.appaccount.TraeApi.fetchModels(channel)
+            return@withContext r.map { rows -> rows.map { it.id } }
+        }
         runCatching {
             val adapter = AdapterRegistry.get(channel)
             val path = adapter.modelsPath() ?: throw IllegalStateException("该协议没有标准 models 端点")

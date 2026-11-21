@@ -46,6 +46,9 @@ import androidx.compose.ui.unit.dp
 import com.pocketgateway.app.core.appaccount.AppAccounts
 import com.pocketgateway.app.core.appaccount.DeviceAuthClient
 import com.pocketgateway.app.core.appaccount.LoginSession
+import com.pocketgateway.app.core.appaccount.TraeApi
+import com.pocketgateway.app.core.appaccount.TraeAuth
+import com.pocketgateway.app.core.appaccount.TraeLoginSession
 import com.pocketgateway.app.core.appaccount.WorkBuddyApi
 import com.pocketgateway.app.core.appaccount.buildAppChannel
 import com.pocketgateway.app.core.model.AccountMode
@@ -81,7 +84,14 @@ fun AppAccountScreen(vm: GatewayViewModel) {
     var platformBase by remember { mutableStateOf("") }
     var platformModel by remember { mutableStateOf("") }
 
+    // TRAE 登录态（与 WorkBuddy 分开，互不影响）
+    var traeSession by remember { mutableStateOf<TraeLoginSession?>(null) }
+    var traeBusy by remember { mutableStateOf(false) }
+    var traeStatus by remember { mutableStateOf<String?>(null) }
+    var traeError by remember { mutableStateOf<String?>(null) }
+
     val appAccounts = config.channels.filter { it.type == ProviderType.APP_NATIVE }
+    val traeAccounts = config.channels.filter { it.type == ProviderType.TRAE }
     val preferredAccount = appAccounts.firstOrNull { it.id == config.preferredAccountId }
     val appCh = if (config.accountMode == AccountMode.SINGLE && preferredAccount != null) {
         preferredAccount
@@ -112,9 +122,9 @@ fun AppAccountScreen(vm: GatewayViewModel) {
         // 操作区
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("账号管理", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("WorkBuddy 账号", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Text(
-                    "OAuth 登录或导入凭证。",
+                    "WorkBuddy / CodeBuddy 设备授权登录（OAuth），无需 API Key。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -253,16 +263,150 @@ fun AppAccountScreen(vm: GatewayViewModel) {
             }
         }
 
+        // TRAE 账号：只有 OAuth 登录，没有 API Key
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("TRAE 账号", style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold)
+                Text(
+                    "TRAE 不提供 API Key，只能用网页 OAuth 登录。点「登录 TRAE」打开授权页，" +
+                        "授权完成后回到这里点「完成登录」；UserJWT 过期会自动用 RefreshToken 续期。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(enabled = !traeBusy, onClick = {
+                        traeBusy = true
+                        traeError = null
+                        traeStatus = null
+                        scope.launch {
+                            val result = TraeAuth.startLogin()
+                            traeBusy = false
+                            result.onSuccess { s ->
+                                traeSession = s
+                                traeStatus = "已生成授权链接，浏览器完成授权后回来点「完成登录」"
+                                runCatching {
+                                    ctx.startActivity(
+                                        Intent(Intent.ACTION_VIEW, Uri.parse(s.authUrl))
+                                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    )
+                                }.onFailure {
+                                    traeError = "无法打开浏览器，可复制授权链接到浏览器：${s.authUrl}"
+                                }
+                            }.onFailure { e ->
+                                traeError = "生成授权链接失败：${e.message}"
+                            }
+                        }
+                    }) { Text("登录 TRAE") }
+
+                    OutlinedButton(enabled = !traeBusy && traeSession != null, onClick = {
+                        val s = traeSession ?: return@OutlinedButton
+                        traeBusy = true
+                        traeError = null
+                        scope.launch {
+                            val result = TraeAuth.finishLogin(s)
+                            if (result.isFailure) {
+                                traeBusy = false
+                                traeError = "未拿到凭证：${result.exceptionOrNull()?.message}"
+                                return@launch
+                            }
+                            val cred = result.getOrThrow()
+                            val ch = TraeAuth.buildChannel(cred)
+                            vm.upsertChannel(ch)
+                            traeSession = null
+                            runCatching { vm.startGateway() }
+                            val rows = TraeApi.fetchModels(ch).getOrElse { emptyList() }
+                            if (rows.isNotEmpty()) {
+                                vm.upsertChannel(ch.copy(models = rows.map { it.id }))
+                            }
+                            traeBusy = false
+                            traeStatus = "✅ TRAE 登录成功" +
+                                (if (rows.isNotEmpty()) "，已同步 ${rows.size} 个模型" else "（可稍后刷新模型）")
+                        }
+                    }) { Text("完成登录") }
+                }
+
+                if (traeAccounts.isNotEmpty()) {
+                    Text("已登录 TRAE 账号", style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary)
+                    traeAccounts.forEach { ch ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(ch.name, style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "UID ${ch.appKind.ifBlank { "—" }} · 模型 ${ch.models.size}" +
+                                        if (ch.refreshToken.isBlank()) " · 无刷新令牌" else "",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                if (ch.apiKey.isBlank()) {
+                                    Text("凭证为空：请重新登录", style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.error)
+                                }
+                            }
+                            Switch(
+                                checked = ch.enabled,
+                                onCheckedChange = { en ->
+                                    vm.updateConfig { cfg ->
+                                        cfg.copy(channels = cfg.channels.map {
+                                            if (it.id == ch.id) it.copy(enabled = en) else it
+                                        })
+                                    }
+                                },
+                            )
+                            TextButton(onClick = { pendingDelete = ch }) { Text("删除") }
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedButton(enabled = !traeBusy, onClick = {
+                            traeBusy = true
+                            traeError = null
+                            scope.launch {
+                                var total = 0
+                                var failed = 0
+                                traeAccounts.forEach { ch ->
+                                    TraeApi.fetchModels(ch).onSuccess { rows ->
+                                        if (rows.isNotEmpty()) {
+                                            vm.upsertChannel(ch.copy(models = rows.map { it.id }))
+                                            total += rows.size
+                                        }
+                                    }.onFailure { failed++ }
+                                }
+                                traeBusy = false
+                                traeStatus = "已刷新 TRAE 模型 $total 个" +
+                                    if (failed > 0) "，$failed 个账号失败" else ""
+                            }
+                        }) { Text(if (traeBusy) "刷新中…" else "刷新 TRAE 模型") }
+                    }
+                }
+
+                traeStatus?.let {
+                    Text(it, color = MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.bodySmall)
+                }
+                traeError?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+
         // 其他平台账号（API Key）
         run {
-            val otherChannels = config.channels.filter { it.type != ProviderType.APP_NATIVE }
+            val otherChannels = config.channels.filter {
+                it.type != ProviderType.APP_NATIVE && it.type != ProviderType.TRAE
+            }
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("其他平台账号（API Key）", style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold)
                     Text(
-                        "WorkBuddy 用 OAuth 登录；OpenAI / Claude / Gemini / DeepSeek 等其他平台直接填 API Key 即可。" +
-                            "只能登录、不提供 API Key 的客户端（如 TRAE）无法作为上游接入。",
+                        "WorkBuddy / TRAE 用 OAuth 登录；OpenAI / Claude / Gemini / DeepSeek 等其他平台直接填 API Key 即可。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -555,8 +699,13 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                     TextButton(onClick = {
                         vm.deleteChannel(target.id)
                         pendingDelete = null
-                        info = null
-                        status = "已删除"
+                        if (target.type == ProviderType.TRAE) {
+                            traeStatus = "已删除 TRAE 账号"
+                            traeSession = null
+                        } else {
+                            info = null
+                            status = "已删除"
+                        }
                     }) { Text("确定删除") }
                 },
                 dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("取消") } },
@@ -648,6 +797,7 @@ private fun providerTypeLabel(type: ProviderType): String = when (type) {
     ProviderType.GEMINI -> "Gemini"
     ProviderType.CUSTOM -> "自定义"
     ProviderType.APP_NATIVE -> "APP 直连"
+    ProviderType.TRAE -> "TRAE"
 }
 
 @Composable

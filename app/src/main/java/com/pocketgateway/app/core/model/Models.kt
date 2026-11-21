@@ -24,6 +24,12 @@ enum class ProviderType {
      * 用户只需提供登录后的账号凭证（Cookie/Token），无需填写 URL 与 API Key。
      */
     @SerialName("app_native") APP_NATIVE,
+
+    /**
+     * TRAE 账号直连：与 [APP_NATIVE] 类似，但 TRAE **没有 API Key**，
+     * 只能用网页 OAuth 授权换取的 UserJWT 调用，并可用 RefreshToken 自动续期。
+     */
+    @SerialName("trae") TRAE,
     ;
 
     val displayName: String
@@ -33,6 +39,7 @@ enum class ProviderType {
             GEMINI -> "Gemini (Google)"
             CUSTOM -> "自定义透传"
             APP_NATIVE -> "APP 账号直连"
+            TRAE -> "TRAE（账号登录）"
         }
 }
 
@@ -143,6 +150,12 @@ data class Channel(
 
     /** 设备令牌（X-Device-Token），可留空；留空时不注入该头。 */
     val deviceToken: String = "",
+
+    /**
+     * OAuth 刷新令牌（仅 [ProviderType.TRAE] 使用）。
+     * UserJWT 过期时用它调用 ExchangeToken 自动续期，用户无需重新登录。
+     */
+    val refreshToken: String = "",
 
     /**
      * 是否启用请求体指纹净化（默认关闭）。
