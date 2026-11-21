@@ -296,35 +296,45 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                         )
                     }
 
-                    HorizontalDivider()
+                    Text(
+                        "说明：多个账号默认按权重轮询；选「固定账号」后，只有该账号参与路由。" +
+                            "账号的启用/停用开关在下方「账号列表」中管理。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
 
-                    appAccounts.forEach { ch ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth().clickable {
-                                vm.updateConfig {
-                                    it.copy(accountMode = AccountMode.SINGLE, preferredAccountId = ch.id)
-                                }
-                            },
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            RadioButton(
-                                selected = config.accountMode == AccountMode.SINGLE &&
+        // 账号列表：按国内/国际分组，逐账号管理
+        if (appAccounts.isNotEmpty()) {
+            val cnAccounts = appAccounts.filter { !it.baseUrl.contains("workbuddy.ai", true) }
+            val intlAccounts = appAccounts.filter { it.baseUrl.contains("workbuddy.ai", true) }
+
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("账号列表", style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold)
+                    Text(
+                        "共 ${appAccounts.size} 个账号。开关控制是否参与路由；点账号可设为固定账号。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+
+                    if (cnAccounts.isNotEmpty()) {
+                        Text("国内账号", style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary)
+                        cnAccounts.forEach { ch ->
+                            AccountRowItem(
+                                ch = ch,
+                                pinned = config.accountMode == AccountMode.SINGLE &&
                                     config.preferredAccountId == ch.id,
-                                onClick = null,
-                            )
-                            Column(Modifier.weight(1f)) {
-                                Text(ch.name, style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.SemiBold)
-                                Text(
-                                    "UID ${ch.appKind.ifBlank { "—" }} · 权重 ${ch.weight}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Switch(
-                                checked = ch.enabled,
-                                onCheckedChange = { en ->
+                                onPin = {
+                                    vm.updateConfig {
+                                        it.copy(accountMode = AccountMode.SINGLE, preferredAccountId = ch.id)
+                                    }
+                                },
+                                onToggle = { en ->
                                     vm.updateConfig { cfg ->
                                         cfg.copy(channels = cfg.channels.map {
                                             if (it.id == ch.id) it.copy(enabled = en) else it
@@ -335,14 +345,37 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                         }
                     }
 
-                    Text(
-                        "说明：多个账号默认按权重轮询；选「固定账号」后，只有该账号参与路由。" +
-                            "关闭开关的账号不会收到请求。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    if (intlAccounts.isNotEmpty()) {
+                        Text("国际账号", style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary)
+                        intlAccounts.forEach { ch ->
+                            AccountRowItem(
+                                ch = ch,
+                                pinned = config.accountMode == AccountMode.SINGLE &&
+                                    config.preferredAccountId == ch.id,
+                                onPin = {
+                                    vm.updateConfig {
+                                        it.copy(accountMode = AccountMode.SINGLE, preferredAccountId = ch.id)
+                                    }
+                                },
+                                onToggle = { en ->
+                                    vm.updateConfig { cfg ->
+                                        cfg.copy(channels = cfg.channels.map {
+                                            if (it.id == ch.id) it.copy(enabled = en) else it
+                                        })
+                                    }
+                                },
+                            )
+                        }
+                    }
                 }
             }
+        }
+
+        // 当前账号详情
+        if (appCh != null) {
+            Text("当前账号详情", style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold)
         }
 
         // 账号卡片
@@ -371,6 +404,63 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                 dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("取消") } },
             )
         }
+    }
+}
+
+@Composable
+private fun AccountRowItem(
+    ch: Channel,
+    pinned: Boolean,
+    onPin: () -> Unit,
+    onToggle: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onPin),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        RadioButton(selected = pinned, onClick = null)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(ch.name, style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold)
+                Box(
+                    modifier = Modifier
+                        .background(
+                            when {
+                                !ch.enabled -> MaterialTheme.colorScheme.errorContainer
+                                pinned -> MaterialTheme.colorScheme.primaryContainer
+                                else -> MaterialTheme.colorScheme.surfaceVariant
+                            },
+                            RoundedCornerShape(8.dp),
+                        )
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                ) {
+                    Text(
+                        when {
+                            !ch.enabled -> "已停用"
+                            pinned -> "固定中"
+                            else -> "轮询中"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = when {
+                            !ch.enabled -> MaterialTheme.colorScheme.error
+                            pinned -> MaterialTheme.colorScheme.primary
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
+            }
+            Text(
+                "UID ${ch.appKind.ifBlank { "—" }} · 权重 ${ch.weight} · 模型 ${ch.models.size}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(checked = ch.enabled, onCheckedChange = onToggle)
     }
 }
 

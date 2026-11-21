@@ -461,7 +461,8 @@ class WorkBuddyAdapter : ProviderAdapter {
                 "you are an? (ai )?(coding |code )?agent|cc_entrypoint\\s*=|" +
                 "you are .{0,30}(powerful )?ai agent|orchestration capabilities|" +
                 "ohmyopencode|<agent-identity>|<role>|<behavior_instructions>|" +
-                "deepseek[\\s_-]*harness",
+                "deepseek[\\s_-]*harness|" +
+                "you are trae|trae.{0,20}(ai )?(ide|agent|assistant)|<trae",
         )
 
         /** 自家网关/系统指令白名单，不替换。 */

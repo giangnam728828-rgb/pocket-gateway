@@ -123,6 +123,14 @@ object AccessPresets {
             },
         ),
         AccessPreset(
+            name = "TRAE",
+            category = "编辑器",
+            step = "TRAE 设置 → 模型 → 添加自定义模型（OpenAI 兼容）→ Base URL 填含 /v1 的地址，API Key 填密钥，模型名填下方名称。",
+            jsonTemplate = { b, k, m ->
+                """{"provider":"openai","baseUrl":"${esc(b)}","apiKey":"${esc(k)}","model":"${esc(m)}"}"""
+            },
+        ),
+        AccessPreset(
             name = "ChatWise",
             category = "桌面",
             step = "设置 → 模型 → OpenAI → API Host 填 BASE HOST，API Key 填密钥。",
