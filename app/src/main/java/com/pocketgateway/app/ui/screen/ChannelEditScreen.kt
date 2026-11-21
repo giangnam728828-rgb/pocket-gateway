@@ -582,7 +582,11 @@ fun ChannelEditDialog(
                     name = name.ifBlank { "未命名渠道" },
                     type = type,
                     enabled = initial.enabled,
-                    baseUrl = baseUrl.trim(),
+                    baseUrl = if (type == ProviderType.TRAE && baseUrl.isBlank()) {
+                        com.pocketgateway.app.core.appaccount.TraeAuth.CHAT_BASE
+                    } else {
+                        baseUrl.trim()
+                    },
                     apiKey = apiKey,
                     authHeader = authHeader.trim(),
                     extraHeaders = extraHeaders,

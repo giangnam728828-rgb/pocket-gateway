@@ -405,6 +405,27 @@ object TraeApi {
         return "data: " + AppJson.encodeToString(JsonObject.serializer(), obj) + "\n\n"
     }
 
+    /** 首帧：告知客户端角色，兼容要求 role 先行的客户端。 */
+    fun roleChunk(model: String): String {
+        val obj = buildJsonObject {
+            put("id", "chatcmpl-${System.currentTimeMillis()}")
+            put("object", "chat.completion.chunk")
+            put("created", System.currentTimeMillis() / 1000)
+            put("model", model)
+            put(
+                "choices",
+                buildJsonArray {
+                    add(buildJsonObject {
+                        put("index", 0)
+                        put("delta", buildJsonObject { put("role", "assistant") })
+                        put("finish_reason", JsonNull)
+                    })
+                },
+            )
+        }
+        return "data: " + AppJson.encodeToString(JsonObject.serializer(), obj) + "\n\n"
+    }
+
     fun finalChunk(model: String): String {
         val obj = buildJsonObject {
             put("id", "chatcmpl-${System.currentTimeMillis()}")

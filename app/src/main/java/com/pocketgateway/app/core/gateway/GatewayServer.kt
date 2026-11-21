@@ -457,6 +457,8 @@ class GatewayServer(
                                 var emitted = 0
                                 var streamError = ""
                                 try {
+                                    channelOut.writeStringUtf8(TraeApi.roleChunk(outModel))
+                                    channelOut.flush()
                                     withContext(Dispatchers.IO) {
                                         while (true) {
                                             val event = stream.nextEvent() ?: break

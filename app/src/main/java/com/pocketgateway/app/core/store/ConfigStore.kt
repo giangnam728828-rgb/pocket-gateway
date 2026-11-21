@@ -66,11 +66,16 @@ class ConfigStore(private val context: Context) {
      */
     private fun normalize(cfg: GatewayConfig): GatewayConfig {
         val fixed = cfg.channels.map { ch ->
-            if (ch.type == com.pocketgateway.app.core.model.ProviderType.APP_NATIVE) {
-                val global = ch.baseUrl.contains("workbuddy.ai", true) || ch.name.contains("国际")
-                val base = if (global) "https://www.workbuddy.ai" else "https://copilot.tencent.com"
-                if (ch.baseUrl != base) ch.copy(baseUrl = base) else ch
-            } else ch
+            when {
+                ch.type == com.pocketgateway.app.core.model.ProviderType.APP_NATIVE -> {
+                    val global = ch.baseUrl.contains("workbuddy.ai", true) || ch.name.contains("国际")
+                    val base = if (global) "https://www.workbuddy.ai" else "https://copilot.tencent.com"
+                    if (ch.baseUrl != base) ch.copy(baseUrl = base) else ch
+                }
+                ch.type == com.pocketgateway.app.core.model.ProviderType.TRAE && ch.baseUrl.isBlank() ->
+                    ch.copy(baseUrl = "https://trae-api-cn.mchost.guru")
+                else -> ch
+            }
         }
         return if (fixed == cfg.channels) cfg else cfg.copy(channels = fixed)
     }
