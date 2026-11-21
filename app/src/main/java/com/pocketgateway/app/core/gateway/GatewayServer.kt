@@ -6,6 +6,7 @@ import com.pocketgateway.app.core.adapter.RequestPayload
 import com.pocketgateway.app.core.adapter.StreamConverter
 import com.pocketgateway.app.core.appaccount.TraeApi
 import com.pocketgateway.app.core.appaccount.TraeAuth
+import com.pocketgateway.app.core.appaccount.TraeGuard
 import com.pocketgateway.app.core.appaccount.TraeTextAccumulator
 import com.pocketgateway.app.core.model.Channel
 import com.pocketgateway.app.core.model.GatewayConfig
@@ -48,6 +49,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonNull
@@ -57,6 +60,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.random.Random
 
 /**
  * 内嵌 HTTP 网关服务器（基于 Ktor 2.3 / CIO 引擎，可在 Android JVM 运行）。
@@ -169,15 +173,18 @@ class GatewayServer(
     private fun selectChannels(cfg: GatewayConfig, model: String?): List<Channel> {
         var list = cfg.channels.filter { it.enabled && it.baseUrl.isNotBlank() }
 
-        // 固定账号模式：APP_NATIVE 只保留指定账号；该账号不可用时回退到账号池，
-        // 避免用户误把唯一账号停用后整条链路无路可走。非 APP 渠道不受影响。
+        // 固定账号模式：WorkBuddy 与 TRAE 都属于「APP 账号」，只保留指定账号；
+        // 该账号不可用时回退到账号池，避免用户误把唯一账号停用后整条链路无路可走。
+        // 普通 API Key 渠道不受影响。
         if (cfg.accountMode == com.pocketgateway.app.core.model.AccountMode.SINGLE) {
             val preferred = list.find {
-                it.type == ProviderType.APP_NATIVE && it.id == cfg.preferredAccountId
+                (it.type == ProviderType.APP_NATIVE || it.type == ProviderType.TRAE) &&
+                    it.id == cfg.preferredAccountId
             }
             if (preferred != null) {
                 list = list.filter {
-                    it.type != ProviderType.APP_NATIVE || it.id == preferred.id
+                    (it.type != ProviderType.APP_NATIVE && it.type != ProviderType.TRAE) ||
+                        it.id == preferred.id
                 }
             }
         }
@@ -305,6 +312,7 @@ class GatewayServer(
         } == true
 
         var lastError = ""
+        var lastTraeRetryMs = 0L
         for (channel in candidates) {
             // APP 账号直连渠道：凭证为空时直接给出明确原因，避免上游返回 302/401 让用户困惑
             if (channel.type == com.pocketgateway.app.core.model.ProviderType.APP_NATIVE &&
@@ -392,7 +400,8 @@ class GatewayServer(
                 }
             }
 
-            // TRAE 账号直连：两步协议（创建会话 → 订阅事件流），失败时用 refreshToken 自动续期
+            // TRAE 账号直连：两步协议（创建会话 → 订阅事件流）。防风控策略：
+            // 临近过期先续期、账号级串行+随机间隔、额度/限流错误长冷却。
             if (channel.type == ProviderType.TRAE) {
                 if (channel.apiKey.isBlank()) {
                     return respondError(
@@ -409,13 +418,51 @@ class GatewayServer(
                         "本机网关限流（${rl / 1000}s 后重试），避免账号触发上游风控",
                     )
                 }
-                RequestThrottle.before(channel.id)
+
                 var traeChannel = channel
+
+                // 账号仍处于风控冷却：直接返回，不再向上游发任何请求
+                val riskWait = TraeGuard.riskRemaining(traeChannel)
+                if (riskWait > 0) {
+                    lastTraeRetryMs = maxOf(lastTraeRetryMs, riskWait)
+                    lastError = "TRAE 账号风控冷却中（${riskWait / 1000}s 后重试）"
+                    log(
+                        cfg, model, traeChannel, 429, false,
+                        System.currentTimeMillis() - start, lastError, wantStream,
+                    )
+                    continue
+                }
+
+                // 1) 账号级独占：同一账号同一时刻只跑一个请求，并插入随机间隔
+                val lease = try {
+                    TraeGuard.leaseChat(traeChannel)
+                } catch (e: Exception) {
+                    lastError = e.message ?: "TRAE 账号忙"
+                    log(
+                        cfg, model, traeChannel, 429, false,
+                        System.currentTimeMillis() - start, lastError, wantStream,
+                    )
+                    continue
+                }
+
                 try {
+                    // 2) 临期主动续期（在账号租约内串行），避免用过期 JWT 触发 401
+                    val preRefresh = runCatching { TraeAuth.refreshIfNeeded(traeChannel) }.getOrNull()
+                    if (preRefresh != null) {
+                        traeChannel = traeChannel.copy(
+                            apiKey = preRefresh.token,
+                            refreshToken = preRefresh.refreshToken.ifBlank { traeChannel.refreshToken },
+                            appKind = traeChannel.appKind.ifBlank { preRefresh.uid },
+                        )
+                        configStore.upsertChannel(traeChannel)
+                    }
+
+                    RequestThrottle.before(traeChannel.id)
                     var stream = TraeApi.open(traeChannel, body, timeout)
-                    if (stream.status == 401 || stream.status == 403) {
+                    // 仅 401 视为凭证过期；403 更可能是额度/风控，刷新反而增加异常请求
+                    if (stream.status == 401) {
                         stream.close()
-                        val refreshed = TraeAuth.refresh(traeChannel)
+                        val refreshed = TraeAuth.refreshSingleFlight(traeChannel)
                         if (refreshed != null) {
                             traeChannel = traeChannel.copy(
                                 apiKey = refreshed.token,
@@ -429,18 +476,43 @@ class GatewayServer(
                     if (stream.status !in 200..299) {
                         val st = stream.status
                         val errBody = stream.errorBody
+                        val retryAfter = stream.retryAfterMs
                         stream.close()
-                        if (st == 429 || st == 403) cooldown.penalize(traeChannel.id, st)
+                        val bodyRisk = TraeApi.isRiskText(errBody)
+                        val localRiskBlock = errBody.contains("账号风控冷却中")
+                        if (localRiskBlock) lastTraeRetryMs = maxOf(lastTraeRetryMs, retryAfter)
+                        when {
+                            // 本地冷却短路：不再叠加惩罚，避免客户端重试导致冷却时间被无限放大
+                            localRiskBlock -> Unit
+                            st == 429 -> {
+                                val d = cooldown.penalize(traeChannel.id, 429, maxOf(retryAfter, 120_000L))
+                                TraeGuard.markRisk(traeChannel, d)
+                                lastTraeRetryMs = maxOf(lastTraeRetryMs, d)
+                                // 账号间切换前留出随机间隔，避免快速轮换被判定为批量行为
+                                delay(Random.nextLong(1_200L, 2_800L))
+                            }
+                            st == 403 -> {
+                                val d = cooldown.penalize(traeChannel.id, 403, 600_000L)
+                                TraeGuard.markRisk(traeChannel, d)
+                                lastTraeRetryMs = maxOf(lastTraeRetryMs, d)
+                                delay(Random.nextLong(1_200L, 2_800L))
+                            }
+                            bodyRisk -> {
+                                val d = cooldown.penalize(traeChannel.id, 429, maxOf(retryAfter, 180_000L))
+                                TraeGuard.markRisk(traeChannel, d)
+                                lastTraeRetryMs = maxOf(lastTraeRetryMs, d)
+                                delay(Random.nextLong(1_200L, 2_800L))
+                            }
+                        }
                         log(
                             cfg, model, traeChannel, st, false,
                             System.currentTimeMillis() - start, "TRAE: ${truncate(errBody, 200)}", wantStream,
                         )
                         lastError = "TRAE HTTP $st: ${truncate(errBody, 160)}"
+                        lease.release()
                         continue
                     }
 
-                    cooldown.clear(traeChannel.id)
-                    RequestThrottle.clearModel(traeChannel.id, model)
                     response.header("X-PocketGateway-Channel", traeChannel.name)
                     val outModel = model?.takeIf { it.isNotBlank() }
                         ?: traeChannel.models.firstOrNull().orEmpty().ifBlank { "trae" }
@@ -456,6 +528,8 @@ class GatewayServer(
                                 val acc = TraeTextAccumulator()
                                 var emitted = 0
                                 var streamError = ""
+                                var risk = false
+                                var completed = false
                                 try {
                                     channelOut.writeStringUtf8(TraeApi.roleChunk(outModel))
                                     channelOut.flush()
@@ -467,9 +541,13 @@ class GatewayServer(
                                                 channelOut.flush()
                                                 continue
                                             }
-                                            if (event.name == "done") break
+                                            if (event.name == "done") {
+                                                completed = true
+                                                break
+                                            }
                                             if (event.name == "error") {
                                                 streamError = TraeApi.errorMessage(event.data)
+                                                risk = TraeApi.isRiskError(event.data)
                                                 break
                                             }
                                             val delta = acc.accept(event)
@@ -487,7 +565,34 @@ class GatewayServer(
                                     channelOut.writeStringUtf8("data: [DONE]\n\n")
                                     channelOut.flush()
                                 } finally {
-                                    stream.close()
+                                    withContext(NonCancellable) {
+                                        val abnormal = !completed || streamError.isNotBlank()
+                                        stream.close()
+                                        try {
+                                            // 客户端中断/上游异常时主动结束会话，避免官方侧留下悬挂任务
+                                            if (abnormal) {
+                                                runCatching { TraeApi.stopSession(traeChannel, stream) }
+                                            }
+                                            if (risk) {
+                                                runCatching {
+                                                    val d = cooldown.penalize(
+                                                        traeChannel.id, 429,
+                                                        maxOf(stream.retryAfterMs, 180_000L),
+                                                    )
+                                                    TraeGuard.markRisk(traeChannel, d)
+                                                    RequestThrottle.penalizeModel(traeChannel.id, model, 120_000L)
+                                                }
+                                            } else if (completed && streamError.isBlank()) {
+                                                runCatching {
+                                                    cooldown.clear(traeChannel.id)
+                                                    RequestThrottle.clearModel(traeChannel.id, model)
+                                                }
+                                            }
+                                            Unit
+                                        } finally {
+                                            lease.release()
+                                        }
+                                    }
                                     this@handleChat.log(
                                         cfg, model, traeChannel, 200, streamError.isBlank(),
                                         System.currentTimeMillis() - start,
@@ -500,23 +605,40 @@ class GatewayServer(
                         })
                     } else {
                         val agg = withContext(Dispatchers.IO) { TraeApi.readAggregate(stream) }
+                        val retryAfter = stream.retryAfterMs
                         stream.close()
+                        if (!agg.completed) {
+                            runCatching { TraeApi.stopSession(traeChannel, stream) }
+                        }
+                        if (agg.risk) {
+                            val d = cooldown.penalize(traeChannel.id, 429, maxOf(retryAfter, 180_000L))
+                            TraeGuard.markRisk(traeChannel, d)
+                            lastTraeRetryMs = maxOf(lastTraeRetryMs, d)
+                            RequestThrottle.penalizeModel(traeChannel.id, model, 120_000L)
+                        } else if (agg.completed && agg.error.isBlank()) {
+                            cooldown.clear(traeChannel.id)
+                            RequestThrottle.clearModel(traeChannel.id, model)
+                        }
                         if (agg.text.isBlank() && agg.error.isNotBlank()) {
                             log(
                                 cfg, model, traeChannel, 502, false,
                                 System.currentTimeMillis() - start, "TRAE: ${truncate(agg.error, 200)}", false,
                             )
                             lastError = "TRAE: ${truncate(agg.error, 160)}"
+                            if (agg.risk) delay(Random.nextLong(1_200L, 2_800L))
+                            lease.release()
                             continue
                         }
                         log(
                             cfg, model, traeChannel, 200, true,
                             System.currentTimeMillis() - start, "TRAE chars=${agg.text.length}", false,
                         )
+                        lease.release()
                         respondText(TraeApi.openAiResponse(agg.text, outModel), ContentType.Application.Json)
                     }
                     return
                 } catch (e: Exception) {
+                    lease.release()
                     lastError = e.message ?: e::class.java.simpleName
                     log(
                         cfg, model, traeChannel, 0, false,
@@ -589,6 +711,15 @@ class GatewayServer(
                 lastError = e.message ?: e::class.java.simpleName
                 log(cfg, model, channel, 0, false, System.currentTimeMillis() - start, lastError, wantStream)
             }
+        }
+        if (lastTraeRetryMs > 0) {
+            val seconds = ((lastTraeRetryMs + 999L) / 1000L).coerceAtLeast(1L)
+            response.header("Retry-After", seconds.toString())
+            return respondError(
+                HttpStatusCode.TooManyRequests,
+                "trae_rate_limited",
+                "TRAE 账号风控冷却中，请 ${seconds}s 后重试（已停止继续请求以保护账号）",
+            )
         }
         respondError(HttpStatusCode.BadGateway, "upstream_error", "All channels failed. Last error: $lastError")
     }

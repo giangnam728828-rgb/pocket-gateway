@@ -46,7 +46,7 @@ object TraeApi {
         "$REMOTE/models?functions=solo_agent_remote%2Csolo_work_remote%2Csolo_design_remote&show_custom_model=true"
 
     private const val USER_AGENT =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
 
     /** 心跳事件：转发为 SSE 注释，避免客户端误判流已结束。 */
     val HEARTBEATS = setOf("heartbeat", "keepalive", "ping")
@@ -57,7 +57,14 @@ object TraeApi {
 
     data class TraeEvent(val name: String, val data: JsonObject?)
 
-    data class TraeAggregate(val text: String, val error: String = "")
+    data class TraeAggregate(
+        val text: String,
+        val error: String = "",
+        /** 是否为额度/限流类风控错误（用于触发账号冷却）。 */
+        val risk: Boolean = false,
+        /** 是否收到上游 done 事件（正常结束）。 */
+        val completed: Boolean = false,
+    )
 
     // ---------- 模型 ----------
 
@@ -65,6 +72,14 @@ object TraeApi {
         if (ch.apiKey.isBlank()) {
             return@withContext Result.failure(IllegalStateException("TRAE 未登录：请先完成账号授权"))
         }
+        val riskWait = TraeGuard.riskRemaining(ch)
+        if (riskWait > 0) {
+            return@withContext Result.failure(
+                IllegalStateException("TRAE 账号风控冷却中（${riskWait / 1000}s 后重试）")
+            )
+        }
+        // 后台请求轻节流，避免与正在进行的对话叠加触发风控
+        TraeGuard.paceBackground(ch)
         val res = http(MODELS_URL, "GET", ch.apiKey, null, "application/json", 30_000)
         if (res.status !in 200..299) {
             return@withContext Result.failure(
@@ -90,13 +105,13 @@ object TraeApi {
             .ifEmpty { groupObjects }
 
         val out = LinkedHashMap<String, TraeModel>()
-        preferred.forEach { group ->
-            val models = group["models"] as? JsonArray ?: return@forEach
-            models.forEach { item ->
-                val o = item as? JsonObject ?: return@forEach
+        preferred.forEach groupLoop@ { group ->
+            val models = group["models"] as? JsonArray ?: return@groupLoop
+            models.forEach itemLoop@ { item ->
+                val o = item as? JsonObject ?: return@itemLoop
                 val id = (o.string("config_name") ?: o.string("configName") ?: o.string("name")
                     ?: o.string("model_name") ?: o.string("modelName"))?.trim().orEmpty()
-                if (id.isBlank()) return@forEach
+                if (id.isBlank()) return@itemLoop
                 modelCache[cacheKey(ch, id)] = o
                 val display = o.string("display_name") ?: o.string("displayName")
                     ?: o.string("name") ?: id
@@ -125,6 +140,18 @@ object TraeApi {
      */
     suspend fun open(ch: Channel, request: JsonObject, timeoutMs: Long): TraeStream =
         withContext(Dispatchers.IO) {
+            // 账号处于风控冷却期时直接短路，绝不继续向上游发请求
+            val riskWait = TraeGuard.riskRemaining(ch)
+            if (riskWait > 0) {
+                return@withContext TraeStream(
+                    status = 429,
+                    errorBody = "TRAE 账号风控冷却中（${riskWait / 1000}s 后重试）",
+                    retryAfterMs = riskWait,
+                    conn = null,
+                    reader = null,
+                )
+            }
+
             val model = request.modelName().orEmpty()
             var descriptor = descriptorFor(ch, model)
             if (descriptor == null && model.isNotBlank() && !model.equals("auto", true)) {
@@ -138,6 +165,7 @@ object TraeApi {
                 return@withContext TraeStream(
                     status = session.status,
                     errorBody = session.error.ifBlank { "TRAE 创建会话失败" },
+                    retryAfterMs = session.retryAfterMs,
                     conn = null,
                     reader = null,
                 )
@@ -150,14 +178,28 @@ object TraeApi {
                 conn.responseCode
             } catch (e: Exception) {
                 runCatching { conn.disconnect() }
-                return@withContext TraeStream(0, e.message ?: "网络错误", null, null)
+                stopSession(ch.apiKey, session.sessionId, session.messageId)
+                return@withContext TraeStream(status = 0, errorBody = e.message ?: "网络错误", conn = null, reader = null)
             }
             if (code !in 200..299) {
                 val text = readText(conn, code)
+                val retryAfter = retryAfterMs(conn)
                 runCatching { conn.disconnect() }
-                TraeStream(code, text, null, null)
+                // 事件流都打不开，会话已无意义，按官方客户端习惯主动停止
+                stopSession(ch.apiKey, session.sessionId, session.messageId)
+                TraeStream(
+                    status = code, errorBody = text, retryAfterMs = retryAfter,
+                    conn = null, reader = null,
+                )
             } else {
-                TraeStream(code, "", conn, BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)))
+                TraeStream(
+                    status = code,
+                    errorBody = "",
+                    conn = conn,
+                    reader = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)),
+                    sessionId = session.sessionId,
+                    messageId = session.messageId,
+                )
             }
         }
 
@@ -166,6 +208,7 @@ object TraeApi {
         val messageId: String,
         val status: Int,
         val error: String,
+        val retryAfterMs: Long = 0L,
     )
 
     private fun createSession(
@@ -186,6 +229,7 @@ object TraeApi {
             return SessionResult(
                 "", "", first.status,
                 "TRAE 创建会话失败：HTTP ${first.status} ${first.body.take(300)}",
+                first.retryAfterMs,
             )
         }
 
@@ -201,7 +245,11 @@ object TraeApi {
             else -> 502
         }
         val body = second.body.ifBlank { first.body }
-        return SessionResult("", "", status, "TRAE 创建会话失败：HTTP $status ${body.take(300)}")
+        return SessionResult(
+            "", "", status,
+            "TRAE 创建会话失败：HTTP $status ${body.take(300)}",
+            second.retryAfterMs.takeIf { it > 0 } ?: first.retryAfterMs,
+        )
     }
 
     private fun parseSession(res: HttpResult): SessionResult? {
@@ -245,8 +293,11 @@ object TraeApi {
         descriptor: JsonObject?,
     ): JsonObject {
         val requested = request.modelName().orEmpty()
+        // 只有能对应到 TRAE 模型目录的请求才绑定具体模型；
+        // 来自其他平台（如 WorkBuddy）的模型名交给 TRAE 自动选择，避免模型不存在。
+        val knownModel = requested.isNotBlank() && ch.models.contains(requested)
         val modelName = descriptor?.let { boundModelName(it, requested) }
-            ?: requested.ifBlank { "auto" }
+            ?: if (knownModel) requested else "auto"
 
         val queryParts = buildJsonArray {
             add(buildJsonObject {
@@ -361,27 +412,83 @@ object TraeApi {
     fun errorMessage(data: JsonObject?): String {
         if (data == null) return "上游返回错误"
         val errObj = data["error"] as? JsonObject
-        val code = data.string("code") ?: data.string("err_code") ?: errObj?.string("code") ?: ""
+        val code = errorCode(data)
         val msg = data.string("message") ?: data.string("msg") ?: data.string("detail")
             ?: data.string("reason") ?: errObj?.string("message")
             ?: data.toString().take(200)
         return if (code.isNotBlank()) "$code: $msg" else msg
     }
 
+    /** 提取上游错误码（普通字段或 error 对象内）。 */
+    fun errorCode(data: JsonObject?): String {
+        if (data == null) return ""
+        val errObj = data["error"] as? JsonObject
+        return data.string("code") ?: data.string("err_code")
+            ?: errObj?.string("code") ?: errObj?.string("type") ?: ""
+    }
+
+    /** 额度耗尽/限流类错误：命中后应对账号做较长冷却，避免继续撞风控。 */
+    fun isRiskError(data: JsonObject?): Boolean {
+        if (data == null) return false
+        val code = errorCode(data).lowercase()
+        if (code in setOf("3004", "4008", "4011", "429")) return true
+        return isRiskText(errorMessage(data))
+    }
+
+    /** 纯文本版风控判定：用于 HTTP 错误体（非 JSON 事件）。 */
+    fun isRiskText(text: String): Boolean {
+        val lower = text.lowercase()
+        if (lower.contains("4008") || lower.contains("4011") ||
+            lower.contains("3004") || lower.contains("429")
+        ) return true
+        return lower.contains("quota") || lower.contains("rate limit") ||
+            lower.contains("rate-limit") || lower.contains("too many requests") ||
+            lower.contains("exceeded") || lower.contains("额度") ||
+            lower.contains("限流") || lower.contains("频繁")
+    }
+
     /** 阻塞读完整个事件流（非流式客户端用）；调用方需在 IO 线程执行。 */
     fun readAggregate(stream: TraeStream): TraeAggregate {
         val acc = TraeTextAccumulator()
+        var risk = false
+        var completed = false
         while (true) {
             val event = stream.nextEvent() ?: break
-            if (event.name == "done") break
+            if (event.name == "done") {
+                completed = true
+                break
+            }
             if (event.name == "error") {
                 acc.accept(event)
+                risk = isRiskError(event.data)
                 break
             }
             acc.accept(event)
         }
-        return TraeAggregate(acc.visible(), acc.error())
+        return TraeAggregate(acc.visible(), acc.error(), risk, completed)
     }
+
+    /** 主动停止上游会话（客户端中断/异常结束时），对齐官方客户端清理行为。 */
+    suspend fun stopSession(ch: Channel, stream: TraeStream) {
+        if (stream.sessionId.isBlank() || stream.messageId.isBlank()) return
+        stopSession(ch.apiKey, stream.sessionId, stream.messageId)
+    }
+
+    private suspend fun stopSession(token: String, sessionId: String, messageId: String) =
+        withContext(Dispatchers.IO) {
+            if (token.isBlank() || sessionId.isBlank() || messageId.isBlank()) {
+                return@withContext
+            }
+            val body = buildJsonObject {
+                put("chat_session_id", sessionId)
+                put("user_message_id", messageId)
+            }.toString()
+            http(
+                "$REMOTE/chat_sessions/$sessionId/stop",
+                "POST", token, body, "application/json", 8_000,
+            )
+            Unit
+        }
 
     // ---------- OpenAI 形态输出 ----------
 
@@ -486,7 +593,11 @@ object TraeApi {
 
     // ---------- HTTP ----------
 
-    internal data class HttpResult(val status: Int, val body: String)
+    internal data class HttpResult(
+        val status: Int,
+        val body: String,
+        val retryAfterMs: Long = 0L,
+    )
 
     private fun http(
         url: String,
@@ -503,12 +614,22 @@ object TraeApi {
         }
         return try {
             val status = conn.responseCode
-            HttpResult(status, readText(conn, status))
+            HttpResult(status, readText(conn, status), retryAfterMs(conn))
         } catch (e: Exception) {
             HttpResult(-1, e.message ?: "网络错误")
         } finally {
             runCatching { conn.disconnect() }
         }
+    }
+
+    /** 读取 Retry-After（秒）或 X-RateLimit-Reset（秒/毫秒时间戳）。 */
+    private fun retryAfterMs(conn: HttpURLConnection): Long {
+        val retry = conn.getHeaderField("Retry-After")?.trim()?.toLongOrNull()
+        if (retry != null) return (retry * 1000L).coerceIn(0L, 30 * 60_000L)
+
+        val reset = conn.getHeaderField("X-RateLimit-Reset")?.trim()?.toLongOrNull() ?: return 0L
+        val resetMs = if (reset > 1_000_000_000_000L) reset else reset * 1000L
+        return (resetMs - System.currentTimeMillis()).coerceIn(0L, 30 * 60_000L)
     }
 
     private fun connect(
@@ -521,7 +642,7 @@ object TraeApi {
     ): HttpURLConnection = (URL(url).openConnection() as HttpURLConnection).apply {
         requestMethod = method
         connectTimeout = 20_000
-        readTimeout = timeoutMs.toInt().coerceIn(15_000, 300_000)
+        readTimeout = timeoutMs.toInt().coerceIn(3_000, 300_000)
         instanceFollowRedirects = false
         useCaches = false
         setRequestProperty("Authorization", "Cloud-IDE-JWT ${token.trim()}")
@@ -603,8 +724,13 @@ class TraeTextAccumulator {
 class TraeStream internal constructor(
     val status: Int,
     val errorBody: String,
+    /** 上游 Retry-After / X-RateLimit-Reset 解析出的等待时间。 */
+    val retryAfterMs: Long = 0L,
     private val conn: HttpURLConnection?,
     private val reader: BufferedReader?,
+    /** 会话 ID / 消息 ID，用于异常结束时主动 stop。 */
+    val sessionId: String = "",
+    val messageId: String = "",
 ) {
     fun close() {
         runCatching { reader?.close() }

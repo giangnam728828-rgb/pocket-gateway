@@ -165,17 +165,62 @@ object TraeAuth {
         exchangeToken(rt, userId = ch.appKind.trim())
     }
 
+    /**
+     * 单飞刷新：同一账号并发请求只触发一次 ExchangeToken。
+     * 失败后由 [TraeGuard] 冷却 10 分钟，避免反复触发安全校验。
+     */
+    suspend fun refreshSingleFlight(ch: Channel): TraeCredential? =
+        TraeGuard.withRefresh(ch) { refresh(ch) }
+
+    /** UserJWT 是否即将过期（默认提前 10 分钟）。解析不到 exp 时返回 false。 */
+    fun needsRefresh(ch: Channel, skewMs: Long = 10 * 60_000L): Boolean {
+        if (ch.refreshToken.isBlank()) return false
+        if (ch.apiKey.isBlank()) return true
+        val expiresAt = tokenExpiresAt(ch.apiKey) ?: return false
+        return System.currentTimeMillis() >= expiresAt - skewMs
+    }
+
+    /** 临近过期才刷新；未到期直接返回 null。 */
+    suspend fun refreshIfNeeded(ch: Channel): TraeCredential? {
+        if (!needsRefresh(ch)) return null
+        return refreshSingleFlight(ch)
+    }
+
+    /** 从 JWT 的 exp 声明读取过期时间（毫秒）。 */
+    fun tokenExpiresAt(token: String): Long? {
+        val parts = token.trim().split('.')
+        if (parts.size < 2) return null
+        return runCatching {
+            val json = String(
+                android.util.Base64.decode(
+                    parts[1],
+                    android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING or android.util.Base64.NO_WRAP,
+                ),
+                Charsets.UTF_8,
+            )
+            val obj = AppJson.parseToJsonElement(json) as? JsonObject ?: return@runCatching null
+            val seconds = (obj["exp"] as? JsonPrimitive)?.content?.toLongOrNull()
+                ?: ((obj["data"] as? JsonObject)?.get("exp") as? JsonPrimitive)?.content?.toLongOrNull()
+            seconds?.let { it * 1000L }
+        }.getOrNull()
+    }
+
     /** 由登录凭证生成 TRAE 渠道。 */
-    fun buildChannel(cred: TraeCredential, models: List<String> = emptyList()): Channel = Channel(
-        id = Channel.newId(),
-        name = if (cred.uid.isNotBlank()) "TRAE · ${cred.uid}" else "TRAE（账号登录）",
-        type = ProviderType.TRAE,
-        baseUrl = CHAT_BASE,
-        apiKey = cred.token,
-        refreshToken = cred.refreshToken,
-        appKind = cred.uid,
-        models = models,
-    )
+    fun buildChannel(cred: TraeCredential, models: List<String> = emptyList()): Channel {
+        val id = Channel.newId()
+        // 名称尽量可区分：优先 UID，其次 refreshToken 尾部，最后渠道 ID
+        val suffix = cred.uid.ifBlank { cred.refreshToken.takeLast(6) }.ifBlank { id.takeLast(4) }
+        return Channel(
+            id = id,
+            name = "TRAE · $suffix",
+            type = ProviderType.TRAE,
+            baseUrl = CHAT_BASE,
+            apiKey = cred.token,
+            refreshToken = cred.refreshToken,
+            appKind = cred.uid,
+            models = models,
+        )
+    }
 
     /** 从 UserJWT 里解析用户 ID（手动粘贴 Token 时兜底）。 */
     fun uidFromJwt(token: String): String {

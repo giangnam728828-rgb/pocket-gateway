@@ -2,8 +2,9 @@ package com.pocketgateway.app.ui.screen
 
 import android.content.Intent
 import android.net.Uri
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,12 +14,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -42,6 +46,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.pocketgateway.app.core.appaccount.AppAccounts
 import com.pocketgateway.app.core.appaccount.DeviceAuthClient
@@ -92,9 +97,12 @@ fun AppAccountScreen(vm: GatewayViewModel) {
 
     val appAccounts = config.channels.filter { it.type == ProviderType.APP_NATIVE }
     val traeAccounts = config.channels.filter { it.type == ProviderType.TRAE }
-    val preferredAccount = appAccounts.firstOrNull { it.id == config.preferredAccountId }
-    val appCh = if (config.accountMode == AccountMode.SINGLE && preferredAccount != null) {
-        preferredAccount
+    // 账号池包含 WorkBuddy 与 TRAE，两种登录型账号统一参与路由/固定账号
+    val accountChannels = appAccounts + traeAccounts
+    val preferredAccount = accountChannels.firstOrNull { it.id == config.preferredAccountId }
+    val preferredWorkBuddy = appAccounts.firstOrNull { it.id == config.preferredAccountId }
+    val appCh = if (config.accountMode == AccountMode.SINGLE && preferredWorkBuddy != null) {
+        preferredWorkBuddy
     } else {
         appAccounts.firstOrNull()
     }
@@ -270,7 +278,8 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                     fontWeight = FontWeight.Bold)
                 Text(
                     "TRAE 不提供 API Key，只能用网页 OAuth 登录。点「登录 TRAE」打开授权页，" +
-                        "授权完成后回到这里点「完成登录」；UserJWT 过期会自动用 RefreshToken 续期。",
+                        "授权完成后回到这里点「完成登录」；UserJWT 过期会自动用 RefreshToken 续期。" +
+                        "已启用账号级串行、随机请求间隔与限流冷却，降低账号被风控的概率。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -313,6 +322,14 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                             val cred = result.getOrThrow()
                             val ch = TraeAuth.buildChannel(cred)
                             vm.upsertChannel(ch)
+                            // 刚登录的 TRAE 账号自动加入账号池并设为固定账号，
+                            // 避免请求继续全部走 WorkBuddy。
+                            vm.updateConfig { cfg ->
+                                cfg.copy(
+                                    accountMode = AccountMode.SINGLE,
+                                    preferredAccountId = ch.id,
+                                )
+                            }
                             traeSession = null
                             runCatching { vm.startGateway() }
                             val rows = TraeApi.fetchModels(ch).getOrElse { emptyList() }
@@ -320,48 +337,21 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                                 vm.upsertChannel(ch.copy(models = rows.map { it.id }))
                             }
                             traeBusy = false
-                            traeStatus = "✅ TRAE 登录成功" +
+                            traeStatus = "✅ TRAE 登录成功并已设为默认账号" +
                                 (if (rows.isNotEmpty()) "，已同步 ${rows.size} 个模型" else "（可稍后刷新模型）")
                         }
                     }) { Text("完成登录") }
                 }
 
                 if (traeAccounts.isNotEmpty()) {
-                    Text("已登录 TRAE 账号", style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary)
-                    traeAccounts.forEach { ch ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                Text(ch.name, style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.SemiBold)
-                                Text(
-                                    "UID ${ch.appKind.ifBlank { "—" }} · 模型 ${ch.models.size}" +
-                                        if (ch.refreshToken.isBlank()) " · 无刷新令牌" else "",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                if (ch.apiKey.isBlank()) {
-                                    Text("凭证为空：请重新登录", style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.error)
-                                }
-                            }
-                            Switch(
-                                checked = ch.enabled,
-                                onCheckedChange = { en ->
-                                    vm.updateConfig { cfg ->
-                                        cfg.copy(channels = cfg.channels.map {
-                                            if (it.id == ch.id) it.copy(enabled = en) else it
-                                        })
-                                    }
-                                },
-                            )
-                            TextButton(onClick = { pendingDelete = ch }) { Text("删除") }
-                        }
-                    }
+                    Text(
+                        "已登录 ${traeAccounts.size} 个 TRAE 账号，已加入下方「账号路由」与「账号列表」。" +
+                            if (config.accountMode == AccountMode.SINGLE &&
+                                preferredAccount?.type == ProviderType.TRAE
+                            ) "当前默认账号：${preferredAccount.name}。" else "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         OutlinedButton(enabled = !traeBusy, onClick = {
                             traeBusy = true
@@ -451,8 +441,8 @@ fun AppAccountScreen(vm: GatewayViewModel) {
         }
 
         // 账号路由：账号池轮询 / 固定账号
-        if (appAccounts.isNotEmpty()) {
-            val active = appAccounts.filter { it.enabled }
+        if (accountChannels.isNotEmpty()) {
+            val active = accountChannels.filter { it.enabled }
             val strategyLabel = when (config.routeStrategy) {
                 com.pocketgateway.app.core.model.RouteStrategy.ROUND_ROBIN -> "轮询"
                 com.pocketgateway.app.core.model.RouteStrategy.RANDOM -> "随机"
@@ -460,21 +450,22 @@ fun AppAccountScreen(vm: GatewayViewModel) {
             }
             val fixedOk = config.accountMode == AccountMode.SINGLE &&
                 preferredAccount != null && preferredAccount.enabled
-            val weightText = if (active.size > 1) {
-                active.joinToString(" / ") { ch -> "${ch.name}:${ch.weight}" }
-            } else ""
+            val activeList = active.joinToString("\n") { ch ->
+                "· ${accountTypeShort(ch)}「${ch.name}」 UID ${ch.appKind.ifBlank { "—" }} 权重 ${ch.weight}"
+            }
 
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("账号路由", style = MaterialTheme.typography.titleMedium,
+                    Text("账号路由（WorkBuddy + TRAE）", style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold)
                     Text(
                         when {
-                            fixedOk -> "当前：固定使用「${preferredAccount!!.name}」"
+                            fixedOk -> "当前生效：${accountTypeShort(preferredAccount!!)}" +
+                                "「${preferredAccount.name}」（固定账号）"
                             config.accountMode == AccountMode.SINGLE ->
-                                "当前：固定账号不可用，已回退为账号池（${active.size} 个启用账号）"
-                            else -> "当前：账号池 ${active.size} 个启用账号，按「$strategyLabel」分配" +
-                                if (weightText.isNotEmpty()) "（权重 $weightText）" else ""
+                                "当前：固定账号不可用，已回退为账号池（${active.size} 个启用账号）\n$activeList"
+                            else -> "当前生效：账号池（${active.size} 个启用账号），" +
+                                "按「$strategyLabel」分配\n$activeList"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -490,11 +481,13 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                             selected = config.accountMode == AccountMode.SINGLE,
                             onClick = {
                                 vm.updateConfig {
+                                    val valid = it.preferredAccountId.takeIf { id ->
+                                        accountChannels.any { ch -> ch.id == id }
+                                    }
                                     it.copy(
                                         accountMode = AccountMode.SINGLE,
-                                        preferredAccountId = it.preferredAccountId.ifBlank {
-                                            appAccounts.firstOrNull()?.id.orEmpty()
-                                        },
+                                        preferredAccountId = valid
+                                            ?: accountChannels.firstOrNull()?.id.orEmpty(),
                                     )
                                 }
                             },
@@ -503,8 +496,8 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                     }
 
                     Text(
-                        "说明：多个账号默认按权重轮询；选「固定账号」后，只有该账号参与路由。" +
-                            "账号的启用/停用开关在下方「账号列表」中管理。",
+                        "说明：WorkBuddy 与 TRAE 账号统一进入账号池，默认按权重轮询；" +
+                            "选「固定账号」后，只有选中的账号参与路由。启用/停用与删除在下方「账号列表」中管理。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -512,8 +505,8 @@ fun AppAccountScreen(vm: GatewayViewModel) {
             }
         }
 
-        // 账号列表：按国内/国际分组，逐账号管理
-        if (appAccounts.isNotEmpty()) {
+        // 账号列表：WorkBuddy 按国内/国际分组，TRAE 单独分组，逐账号管理
+        if (accountChannels.isNotEmpty()) {
             val cnAccounts = appAccounts.filter { !it.baseUrl.contains("workbuddy.ai", true) }
             val intlAccounts = appAccounts.filter { it.baseUrl.contains("workbuddy.ai", true) }
 
@@ -522,17 +515,19 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                     Text("账号列表", style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold)
                     Text(
-                        "共 ${appAccounts.size} 个账号。开关控制是否参与路由；点账号可设为固定账号。",
+                        "共 ${accountChannels.size} 个账号（WorkBuddy ${appAccounts.size} / TRAE ${traeAccounts.size}）。" +
+                            "开关控制是否参与路由；点账号可设为固定账号。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
 
                     if (cnAccounts.isNotEmpty()) {
-                        Text("国内账号", style = MaterialTheme.typography.labelLarge,
+                        Text("WorkBuddy · 国内账号", style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.primary)
                         cnAccounts.forEach { ch ->
                             AccountRowItem(
                                 ch = ch,
+                                typeLabel = "WorkBuddy",
                                 pinned = config.accountMode == AccountMode.SINGLE &&
                                     config.preferredAccountId == ch.id,
                                 onPin = {
@@ -552,11 +547,12 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                     }
 
                     if (intlAccounts.isNotEmpty()) {
-                        Text("国际账号", style = MaterialTheme.typography.labelLarge,
+                        Text("WorkBuddy · 国际账号", style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.primary)
                         intlAccounts.forEach { ch ->
                             AccountRowItem(
                                 ch = ch,
+                                typeLabel = "WorkBuddy",
                                 pinned = config.accountMode == AccountMode.SINGLE &&
                                     config.preferredAccountId == ch.id,
                                 onPin = {
@@ -571,6 +567,32 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                                         })
                                     }
                                 },
+                            )
+                        }
+                    }
+
+                    if (traeAccounts.isNotEmpty()) {
+                        Text("TRAE 账号", style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary)
+                        traeAccounts.forEach { ch ->
+                            AccountRowItem(
+                                ch = ch,
+                                typeLabel = "TRAE",
+                                pinned = config.accountMode == AccountMode.SINGLE &&
+                                    config.preferredAccountId == ch.id,
+                                onPin = {
+                                    vm.updateConfig {
+                                        it.copy(accountMode = AccountMode.SINGLE, preferredAccountId = ch.id)
+                                    }
+                                },
+                                onToggle = { en ->
+                                    vm.updateConfig { cfg ->
+                                        cfg.copy(channels = cfg.channels.map {
+                                            if (it.id == ch.id) it.copy(enabled = en) else it
+                                        })
+                                    }
+                                },
+                                onDelete = { pendingDelete = ch },
                             )
                         }
                     }
@@ -698,6 +720,9 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                 confirmButton = {
                     TextButton(onClick = {
                         vm.deleteChannel(target.id)
+                        if (config.preferredAccountId == target.id) {
+                            vm.updateConfig { it.copy(preferredAccountId = "") }
+                        }
                         pendingDelete = null
                         if (target.type == ProviderType.TRAE) {
                             traeStatus = "已删除 TRAE 账号"
@@ -717,29 +742,79 @@ fun AppAccountScreen(vm: GatewayViewModel) {
 @Composable
 private fun AccountRowItem(
     ch: Channel,
+    typeLabel: String,
     pinned: Boolean,
     onPin: () -> Unit,
     onToggle: (Boolean) -> Unit,
+    onDelete: (() -> Unit)? = null,
 ) {
-    Row(
+    val isTrae = typeLabel == "TRAE"
+    val typeColor = if (isTrae) MaterialTheme.colorScheme.tertiary
+                    else MaterialTheme.colorScheme.secondary
+    val typeContainer = if (isTrae) MaterialTheme.colorScheme.tertiaryContainer
+                        else MaterialTheme.colorScheme.secondaryContainer
+
+    Card(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onPin),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = when {
+                !ch.enabled -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                pinned -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                else -> MaterialTheme.colorScheme.surface
+            },
+        ),
+        border = if (pinned) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null,
     ) {
-        RadioButton(selected = pinned, onClick = null)
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Text(ch.name, style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold)
+                RadioButton(selected = pinned, onClick = null)
+
+                // 类型头像：W / T，快速区分是哪个平台
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .background(typeContainer, CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        if (isTrae) "T" else "W",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = typeColor,
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .background(typeContainer, RoundedCornerShape(6.dp))
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                ) {
+                    Text(
+                        typeLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = typeColor,
+                    )
+                }
+
+                Text(
+                    ch.name,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+
                 Box(
                     modifier = Modifier
                         .background(
                             when {
                                 !ch.enabled -> MaterialTheme.colorScheme.errorContainer
-                                pinned -> MaterialTheme.colorScheme.primaryContainer
+                                pinned -> MaterialTheme.colorScheme.primary
                                 else -> MaterialTheme.colorScheme.surfaceVariant
                             },
                             RoundedCornerShape(8.dp),
@@ -749,26 +824,73 @@ private fun AccountRowItem(
                     Text(
                         when {
                             !ch.enabled -> "已停用"
-                            pinned -> "固定中"
-                            else -> "轮询中"
+                            pinned -> "当前使用"
+                            else -> "账号池"
                         },
                         style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
                         color = when {
                             !ch.enabled -> MaterialTheme.colorScheme.error
-                            pinned -> MaterialTheme.colorScheme.primary
+                            pinned -> MaterialTheme.colorScheme.onPrimary
                             else -> MaterialTheme.colorScheme.onSurfaceVariant
                         },
                     )
                 }
+
+                Switch(checked = ch.enabled, onCheckedChange = onToggle)
             }
+
             Text(
-                "UID ${ch.appKind.ifBlank { "—" }} · 权重 ${ch.weight} · 模型 ${ch.models.size}",
+                "$typeLabel · UID ${ch.appKind.ifBlank { "—" }} · " +
+                    "模型 ${ch.models.size} · 权重 ${ch.weight}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 40.dp),
             )
+
+            if (ch.models.isNotEmpty()) {
+                val preview = ch.models.take(3).joinToString("、")
+                val more = if (ch.models.size > 3) " 等 ${ch.models.size} 个" else ""
+                Text(
+                    "模型：$preview$more",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(start = 40.dp),
+                )
+            }
+
+            if (ch.apiKey.isBlank()) {
+                Text(
+                    "凭证为空：请重新登录",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(start = 40.dp),
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 40.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                TextButton(onClick = onPin) {
+                    Text(if (pinned) "当前默认账号" else "设为默认账号")
+                }
+                if (onDelete != null) {
+                    TextButton(onClick = onDelete) {
+                        Text("删除", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
         }
-        Switch(checked = ch.enabled, onCheckedChange = onToggle)
     }
+}
+
+private fun accountTypeShort(ch: Channel): String = when (ch.type) {
+    ProviderType.TRAE -> "TRAE"
+    ProviderType.APP_NATIVE -> "WorkBuddy"
+    else -> providerTypeLabel(ch.type)
 }
 
 @Composable
