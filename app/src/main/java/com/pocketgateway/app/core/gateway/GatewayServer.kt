@@ -329,7 +329,7 @@ class GatewayServer(
                     }
                     if (text.contains("11128")) {
                         // 渠道级风控：冷却更久，避免持续撞；不要在同次请求里换号重试
-                        cooldown.penalize(channel.id, 429, 120_000L)
+                        cooldown.penalize(channel.id, 429, 60_000L)
                     }
                     val respHead = text.take(200).replace(Regex("\\s+"), " ")
                     log(cfg, model, channel, st, ok, System.currentTimeMillis() - start,
@@ -385,7 +385,7 @@ class GatewayServer(
                     }
                     if (resp.body.contains("11128")) {
                         // 渠道级风控：冷却 2 分钟并中止本次候选轮转（换号重试会放大风控）
-                        cooldown.penalize(channel.id, 429, 120_000L)
+                        cooldown.penalize(channel.id, 429, 60_000L)
                         return respondError(
                             HttpStatusCode.BadGateway,
                             "upstream_risk_control",
@@ -517,7 +517,7 @@ class GatewayServer(
                     RequestThrottle.penalizeModel(channel.id, model)
                 }
                 if (resp.body.contains("11128")) {
-                    cooldown.penalize(channel.id, 429, 120_000L)
+                    cooldown.penalize(channel.id, 429, 60_000L)
                     return respondError(
                         HttpStatusCode.BadGateway,
                         "upstream_risk_control",

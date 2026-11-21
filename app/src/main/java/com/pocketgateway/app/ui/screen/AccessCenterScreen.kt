@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -22,6 +23,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -63,6 +65,9 @@ fun AccessCenterScreen(vm: GatewayViewModel) {
     var testResult by remember { mutableStateOf<String?>(null) }
     var refreshing by remember { mutableStateOf(false) }
     var modelMsg by remember { mutableStateOf<String?>(null) }
+    var listenAll by remember(config.listenOnAllInterfaces) {
+        mutableStateOf(config.listenOnAllInterfaces)
+    }
 
     // 模型列表为空时自动尝试拉取（替代已移除的「模型」页的自动刷新）
     LaunchedEffect(config.channels) {
@@ -117,6 +122,33 @@ fun AccessCenterScreen(vm: GatewayViewModel) {
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = listenAll,
+                        onCheckedChange = {
+                            listenAll = it
+                            vm.updateConfig { cfg -> cfg.copy(listenOnAllInterfaces = it) }
+                        },
+                    )
+                    Column {
+                        Text("允许局域网访问", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "关闭后只有手机本机（127.0.0.1）能访问；修改后需重启网关生效。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+
+                InfoLine("跨设备测试地址", "$hostUrl/health") {
+                    copyToClipboard(ctx, "$hostUrl/health")
+                }
+                Text(
+                    "在另一台设备的浏览器打开上面的测试地址：显示 ok 说明网络可达；打不开就是 Wi-Fi/AP 隔离或 IP 不对。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
 
                 OutlinedButton(
                     enabled = !testing,

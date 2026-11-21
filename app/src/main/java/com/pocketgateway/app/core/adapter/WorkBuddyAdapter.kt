@@ -204,7 +204,7 @@ class WorkBuddyAdapter : ProviderAdapter {
         val temp = sanitized.string("temperature")
         val maxTokens = sanitized.string("max_tokens")
 
-        val convId = newHexId()
+        val convId = stableConversationId(channel, msgs)
         val convReqId = newHexId()
         val msgId = newHexId()
         val wb = buildJsonObject {
@@ -265,6 +265,24 @@ class WorkBuddyAdapter : ProviderAdapter {
             }
             normalized.forEach { add(it) }
         }
+    }
+
+    /**
+     * 会话 ID 稳定性：官方客户端一次对话内所有请求复用同一个 conversationId。
+     * 这里用「渠道 + 首条 user 消息」做稳定派生，多轮对话自然保持同一个 ID，
+     * 避免每轮都新建会话带来的异常特征。
+     */
+    private fun stableConversationId(channel: Channel, messages: JsonArray): String {
+        val firstUser = messages.firstOrNull { el ->
+            val o = el as? JsonObject
+            o != null && (o["role"] as? JsonPrimitive)?.content == "user"
+        } as? JsonObject
+        val seed = firstUser?.get("content")?.toString().orEmpty()
+        if (seed.isBlank()) return newHexId()
+        val md = MessageDigest.getInstance("SHA-256")
+        val hex = md.digest("wb2a:conv:${channel.id}:$seed".toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        return hex.take(32)
     }
 
     override fun transformResponse(channel: Channel, rawBody: String): String? {
