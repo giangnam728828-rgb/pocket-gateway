@@ -95,6 +95,29 @@ class UsageDatabase(context: Context) {
         map
     }
 
+    /** 按任务类型统计（每日签到 / 任务领取 / 自动完成…）。 */
+    suspend fun statsByType(): List<TaskTypeStats> = withContext(Dispatchers.IO) {
+        val list = mutableListOf<TaskTypeStats>()
+        helper.readableDatabase.rawQuery(
+            """
+            SELECT task_type, COUNT(*) AS total,
+                   SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS success
+            FROM $TABLE_AUTO_TASKS
+            GROUP BY task_type
+            ORDER BY total DESC
+            """.trimIndent(),
+            null,
+        ).use { c ->
+            while (c.moveToNext()) {
+                val taskType = c.getString(0) ?: ""
+                val total = c.getInt(1)
+                val success = c.getInt(2)
+                list += TaskTypeStats(taskType, total, success)
+            }
+        }
+        list
+    }
+
     /** 清理早于 [days] 天的记录，返回删除条数。 */
     suspend fun pruneOld(days: Int = 30): Int = withContext(Dispatchers.IO) {
         val cutoff = System.currentTimeMillis() - days * 86_400_000L
@@ -138,6 +161,14 @@ class UsageDatabase(context: Context) {
         val success: Int,
         val rate: Float,
     )
+
+    data class TaskTypeStats(
+        val taskType: String,
+        val total: Int,
+        val success: Int,
+    ) {
+        val rate: Float get() = if (total == 0) 0f else success.toFloat() / total.toFloat()
+    }
 
     // ---- 建表 ----
 

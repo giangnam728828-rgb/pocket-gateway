@@ -36,10 +36,14 @@ fun UsageScreen(vm: GatewayViewModel) {
     val scope = rememberCoroutineScope()
 
     var stats by remember { mutableStateOf<Map<String, UsageDatabase.ChannelStats>>(emptyMap()) }
+    var typeStats by remember { mutableStateOf<List<UsageDatabase.TaskTypeStats>>(emptyList()) }
     var recentTasks by remember { mutableStateOf<List<UsageDatabase.TaskRecord>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
     var showError by remember { mutableStateOf<String?>(null) }
     var refreshKey by remember { mutableIntStateOf(0) }
+
+    val gwTotal by vm.total.collectAsState()
+    val gwSuccess by vm.success.collectAsState()
 
     // 加载统计数据（refreshKey 变化时重新加载）
     LaunchedEffect(refreshKey) {
@@ -52,6 +56,7 @@ fun UsageScreen(vm: GatewayViewModel) {
         showError = null
         runCatching {
             stats = usageDb.statsByChannel()
+            typeStats = usageDb.statsByType()
             recentTasks = usageDb.recentTasks(limit = 50)
         }.onFailure { showError = "加载失败：${it.message}" }
         isLoading = false
@@ -104,6 +109,30 @@ fun UsageScreen(vm: GatewayViewModel) {
                         contentPadding = PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp),
                     ) {
+                        // 网关请求统计（日志口径）
+                        item {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                ),
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp)) {
+                                    Text("网关请求（本次运行）", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    val fail = (gwTotal - gwSuccess).coerceAtLeast(0)
+                                    val rate = if (gwTotal == 0L) 0.0 else gwSuccess.toDouble() / gwTotal
+                                    Text("总请求：$gwTotal")
+                                    Text("成功：$gwSuccess · 失败：$fail (${String.format("%.1f", rate * 100)}%)")
+                                    Text(
+                                        "来源：网关日志，App 重启后清零；统计聊天与 embeddings 请求。",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+
                         // 总体统计卡片
                         item {
                             Card(
@@ -120,6 +149,30 @@ fun UsageScreen(vm: GatewayViewModel) {
                                     val rate = if (total == 0) 0.0 else success.toDouble() / total
                                     Text("总任务数：$total")
                                     Text("成功数：$success (${String.format("%.1f", rate * 100)}%)")
+                                    Text(
+                                        "统计口径：签到 / 领奖 / 自动完成的执行记录；不含聊天请求。",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+
+                        // 按任务类型统计
+                        if (typeStats.isNotEmpty()) {
+                            item {
+                                Card(modifier = Modifier.fillMaxWidth()) {
+                                    Column(modifier = Modifier.padding(16.dp)) {
+                                        Text("按任务类型", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        typeStats.forEach { t ->
+                                            Text(
+                                                "${taskTypeLabel(t.taskType)}：${t.success}/${t.total} 成功" +
+                                                    "（${String.format("%.1f", t.rate * 100)}%）",
+                                                fontSize = 14.sp,
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -193,9 +246,10 @@ fun UsageScreen(vm: GatewayViewModel) {
     }
 }
 
-private fun taskTypeLabel(type: String): String = when (type) {
-    "daily_checkin" -> "每日签到"
-    "claim_tasks" -> "任务领取"
+private fun taskTypeLabel(type: String): String = when {
+    type == "daily_checkin" -> "每日签到"
+    type == "claim_tasks" -> "任务领取"
+    type.startsWith("auto_") -> "自动完成"
     else -> type
 }
 

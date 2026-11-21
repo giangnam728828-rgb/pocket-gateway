@@ -39,6 +39,7 @@ import com.pocketgateway.app.core.appaccount.ModelRow
 import com.pocketgateway.app.core.appaccount.WorkBuddyApi
 import com.pocketgateway.app.core.appaccount.task.TaskActionRegistry
 import com.pocketgateway.app.core.appaccount.task.TaskAutomationEngine
+import com.pocketgateway.app.PocketGatewayApp
 import com.pocketgateway.app.core.model.Channel
 import com.pocketgateway.app.core.model.ProviderType
 import com.pocketgateway.app.ui.viewmodel.GatewayViewModel
@@ -293,6 +294,7 @@ private fun CreditBadge(m: ModelRow) {
 fun TasksScreen(vm: GatewayViewModel) {
     val config by vm.config.collectAsState()
     val scope = rememberCoroutineScope()
+    val ctx = LocalContext.current
     val ch = config.channels.firstOrNull { it.type == ProviderType.APP_NATIVE }
 
     var tasks by remember { mutableStateOf<List<WorkBuddyApi.GrowthTask>>(emptyList()) }
@@ -411,6 +413,13 @@ fun TasksScreen(vm: GatewayViewModel) {
                     msg = "准备执行…"
                     scope.launch {
                         val results = TaskAutomationEngine().run(c) { progress -> msg = progress }
+                        // 把自动完成结果写入用量库，保证「用量」页统计完整
+                        val app = ctx.applicationContext as? PocketGatewayApp
+                        results.forEach { r ->
+                            app?.usageDb?.recordAutoTask(
+                                c.id, c.name, "auto_${r.code}", r.ok, r.message,
+                            )
+                        }
                         msg = if (results.isEmpty()) "没有可自动执行的任务"
                         else "自动完成：成功 ${results.count { it.ok }} / ${results.size}"
                         tasks = WorkBuddyApi.fetchTasks(c).first

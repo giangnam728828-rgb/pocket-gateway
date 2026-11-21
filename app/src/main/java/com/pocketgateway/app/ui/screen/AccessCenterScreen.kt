@@ -7,10 +7,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -43,6 +46,7 @@ import java.net.URL
  * 接入中心：把网关地址、密钥、模型名与常见客户端的配置一次给全。
  * 替代原来的「模型」Tab。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AccessCenterScreen(vm: GatewayViewModel) {
     val config by vm.config.collectAsState()
@@ -54,11 +58,19 @@ fun AccessCenterScreen(vm: GatewayViewModel) {
     val baseUrl = vm.baseUrl.value            // 含 /v1
     val hostUrl = baseUrl.removeSuffix("/v1") // 不含 /v1
     val apiKey = config.accessToken
-    val model = config.channels
-        .firstOrNull { it.models.isNotEmpty() }
-        ?.models?.firstOrNull()
-        ?.takeIf { it.isNotBlank() }
-        ?: "gpt-4o"
+    val allModels = config.channels
+        .filter { it.enabled }
+        .flatMap { ch -> ch.models + ch.modelMapping.keys }
+        .distinct()
+    var selectedModel by remember { mutableStateOf("") }
+    LaunchedEffect(allModels) {
+        if (selectedModel !in allModels) {
+            selectedModel = allModels.firstOrNull().orEmpty()
+        }
+    }
+    val model = selectedModel.ifBlank {
+        config.channels.firstOrNull { it.models.isNotEmpty() }?.models?.firstOrNull() ?: "gpt-4o"
+    }
 
     var query by remember { mutableStateOf("") }
     var testing by remember { mutableStateOf(false) }
@@ -107,6 +119,27 @@ fun AccessCenterScreen(vm: GatewayViewModel) {
                     copyToClipboard(ctx, apiKey)
                 }
                 InfoLine("模型", model) { copyToClipboard(ctx, model) }
+
+                if (allModels.size > 1) {
+                    Text(
+                        "可用模型（点选后，下面所有客户端的配置会跟着切换）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        allModels.forEach { m ->
+                            FilterChip(
+                                selected = m == model,
+                                onClick = { selectedModel = m },
+                                label = { Text(m) },
+                            )
+                        }
+                    }
+                }
 
                 if (!running) {
                     Text(
@@ -201,6 +234,26 @@ fun AccessCenterScreen(vm: GatewayViewModel) {
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                }
+            }
+        }
+
+        // 按账号展示模型，切换账号/平台后自动刷新
+        val channelModels = config.channels.filter { it.enabled && it.models.isNotEmpty() }
+        if (channelModels.isNotEmpty()) {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("可用模型（按账号）", style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold)
+                    channelModels.forEach { ch ->
+                        Text(ch.name, style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold)
+                        Text(
+                            ch.models.joinToString(" / "),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
         }

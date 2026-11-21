@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -49,6 +50,8 @@ import com.pocketgateway.app.core.appaccount.WorkBuddyApi
 import com.pocketgateway.app.core.appaccount.buildAppChannel
 import com.pocketgateway.app.core.model.AccountMode
 import com.pocketgateway.app.core.model.Channel
+import com.pocketgateway.app.core.model.ChannelPreset
+import com.pocketgateway.app.core.model.ProviderPresets
 import com.pocketgateway.app.core.model.ProviderType
 import com.pocketgateway.app.ui.viewmodel.GatewayViewModel
 import kotlinx.coroutines.launch
@@ -71,6 +74,12 @@ fun AppAccountScreen(vm: GatewayViewModel) {
     var manualToken by remember { mutableStateOf("") }
     var showManual by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<Channel?>(null) }
+
+    var showPlatformDialog by remember { mutableStateOf(false) }
+    var selectedPreset by remember { mutableStateOf<ChannelPreset?>(null) }
+    var platformKey by remember { mutableStateOf("") }
+    var platformBase by remember { mutableStateOf("") }
+    var platformModel by remember { mutableStateOf("") }
 
     val appAccounts = config.channels.filter { it.type == ProviderType.APP_NATIVE }
     val preferredAccount = appAccounts.firstOrNull { it.id == config.preferredAccountId }
@@ -244,6 +253,59 @@ fun AppAccountScreen(vm: GatewayViewModel) {
             }
         }
 
+        // 其他平台账号（API Key）
+        run {
+            val otherChannels = config.channels.filter { it.type != ProviderType.APP_NATIVE }
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("其他平台账号（API Key）", style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold)
+                    Text(
+                        "WorkBuddy 用 OAuth 登录；OpenAI / Claude / Gemini / DeepSeek 等其他平台直接填 API Key 即可，" +
+                            "不需要登录它们的客户端。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedButton(onClick = {
+                        selectedPreset = null
+                        platformKey = ""
+                        platformBase = ""
+                        platformModel = ""
+                        showPlatformDialog = true
+                    }) { Text("添加平台账号") }
+
+                    val official = otherChannels.filter { it.type != ProviderType.CUSTOM }
+                    val custom = otherChannels.filter { it.type == ProviderType.CUSTOM }
+                    if (official.isNotEmpty()) {
+                        Text("官方平台", style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary)
+                        official.forEach { ch ->
+                            PlatformRow(ch) { en ->
+                                vm.updateConfig { cfg ->
+                                    cfg.copy(channels = cfg.channels.map {
+                                        if (it.id == ch.id) it.copy(enabled = en) else it
+                                    })
+                                }
+                            }
+                        }
+                    }
+                    if (custom.isNotEmpty()) {
+                        Text("自定义 / 私有接口", style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary)
+                        custom.forEach { ch ->
+                            PlatformRow(ch) { en ->
+                                vm.updateConfig { cfg ->
+                                    cfg.copy(channels = cfg.channels.map {
+                                        if (it.id == ch.id) it.copy(enabled = en) else it
+                                    })
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // 账号路由：账号池轮询 / 固定账号
         if (appAccounts.isNotEmpty()) {
             val active = appAccounts.filter { it.enabled }
@@ -388,6 +450,102 @@ fun AppAccountScreen(vm: GatewayViewModel) {
             )
         }
 
+        if (showPlatformDialog) {
+            AlertDialog(
+                onDismissRequest = { showPlatformDialog = false },
+                title = { Text("添加平台账号") },
+                text = {
+                    Column(
+                        modifier = Modifier.heightIn(max = 420.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            "选择平台后填入 API Key。这里添加的是「上游平台账号」，不是客户端登录。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        ProviderPresets.OFFICIAL.forEach { p ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth()
+                                    .clickable {
+                                        selectedPreset = p
+                                        platformBase = p.baseUrl
+                                        platformModel = p.models.firstOrNull().orEmpty()
+                                    }
+                                    .padding(vertical = 6.dp),
+                            ) {
+                                Column {
+                                    Text(
+                                        p.label,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (selectedPreset?.key == p.key) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurface
+                                        },
+                                    )
+                                    if (p.note.isNotBlank()) {
+                                        Text(
+                                            p.note,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        selectedPreset?.let { p ->
+                            HorizontalDivider()
+                            OutlinedTextField(
+                                value = platformKey, onValueChange = { platformKey = it },
+                                label = { Text("API Key") },
+                                modifier = Modifier.fillMaxWidth(), singleLine = true,
+                            )
+                            OutlinedTextField(
+                                value = platformBase, onValueChange = { platformBase = it },
+                                label = { Text("Base URL") },
+                                modifier = Modifier.fillMaxWidth(), singleLine = true,
+                            )
+                            OutlinedTextField(
+                                value = platformModel, onValueChange = { platformModel = it },
+                                label = { Text("模型（可选）") },
+                                modifier = Modifier.fillMaxWidth(), singleLine = true,
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        enabled = selectedPreset != null && platformKey.isNotBlank(),
+                        onClick = {
+                            val p = selectedPreset ?: return@TextButton
+                            val ch = Channel(
+                                id = Channel.newId(),
+                                name = p.label,
+                                type = p.type,
+                                baseUrl = platformBase.ifBlank { p.baseUrl },
+                                apiKey = platformKey.trim(),
+                                authHeader = p.authHeader,
+                                extraHeaders = p.extraHeaders,
+                                models = listOf(platformModel.trim())
+                                    .filter { it.isNotBlank() }
+                                    .ifEmpty { p.models },
+                            )
+                            vm.upsertChannel(ch)
+                            showPlatformDialog = false
+                            status = "✅ 已添加 ${p.label}"
+                        },
+                    ) { Text("添加") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showPlatformDialog = false }) { Text("取消") }
+                },
+            )
+        }
+
         pendingDelete?.let { target ->
             AlertDialog(
                 onDismissRequest = { pendingDelete = null },
@@ -462,6 +620,34 @@ private fun AccountRowItem(
         }
         Switch(checked = ch.enabled, onCheckedChange = onToggle)
     }
+}
+
+@Composable
+private fun PlatformRow(ch: Channel, onToggle: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(ch.name, style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold)
+            Text(
+                "${providerTypeLabel(ch.type)} · ${ch.baseUrl}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(checked = ch.enabled, onCheckedChange = onToggle)
+    }
+}
+
+private fun providerTypeLabel(type: ProviderType): String = when (type) {
+    ProviderType.OPENAI_COMPAT -> "OpenAI 兼容"
+    ProviderType.CLAUDE -> "Claude"
+    ProviderType.GEMINI -> "Gemini"
+    ProviderType.CUSTOM -> "自定义"
+    ProviderType.APP_NATIVE -> "APP 直连"
 }
 
 @Composable
