@@ -314,6 +314,14 @@ class GatewayServer(
                             payload.body.take(160).replace(Regex("\\s+"), " ")
                         )
                     }
+                    val rl = RequestThrottle.acquire(channel.id)
+                    if (rl > 0) {
+                        return respondError(
+                            HttpStatusCode.TooManyRequests,
+                            "local_rate_limit",
+                            "本机网关限流（${rl / 1000}s 后重试），避免账号触发上游风控",
+                        )
+                    }
                     RequestThrottle.before(channel.id)
                     val (st, text) = com.pocketgateway.app.core.appaccount.WorkBuddyApi
                         .chatStream(channel, payload.body, timeout)
@@ -368,6 +376,14 @@ class GatewayServer(
                     forwardStream(channel, adapter, payload, timeout, model, start)
                     return
                 } else {
+                    val rl = RequestThrottle.acquire(channel.id)
+                    if (rl > 0) {
+                        return respondError(
+                            HttpStatusCode.TooManyRequests,
+                            "local_rate_limit",
+                            "本机网关限流（${rl / 1000}s 后重试），避免账号触发上游风控",
+                        )
+                    }
                     RequestThrottle.before(channel.id)
                     val resp = upstream.call(channel, adapter, "chat", payload, timeout)
                     if (resp.status in 200..299) {
@@ -430,6 +446,14 @@ class GatewayServer(
         model: String?,
         start: Long,
     ) {
+        val rl = RequestThrottle.acquire(channel.id)
+        if (rl > 0) {
+            return respondError(
+                HttpStatusCode.TooManyRequests,
+                "local_rate_limit",
+                "本机网关限流（${rl / 1000}s 后重试），避免账号触发上游风控",
+            )
+        }
         RequestThrottle.before(channel.id)
         val upstreamResp = upstream.prepareStream(channel, adapter, "chat", payload, timeout)
         val status = upstreamResp.status.value
@@ -501,6 +525,14 @@ class GatewayServer(
             val payload = RequestPayload(AppJson.encodeToString(JsonObject.serializer(), mapped))
             val timeout = if (channel.timeoutMs > 0) channel.timeoutMs else cfg.defaultTimeoutMs
             try {
+                val rl = RequestThrottle.acquire(channel.id)
+                if (rl > 0) {
+                    return respondError(
+                        HttpStatusCode.TooManyRequests,
+                        "local_rate_limit",
+                        "本机网关限流（${rl / 1000}s 后重试），避免账号触发上游风控",
+                    )
+                }
                 RequestThrottle.before(channel.id)
                 val resp = upstream.call(channel, AdapterRegistry.get(channel), "embeddings", payload, timeout)
                 if (resp.status in 200..299) {

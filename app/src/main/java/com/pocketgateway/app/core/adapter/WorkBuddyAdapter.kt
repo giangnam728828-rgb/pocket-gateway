@@ -137,17 +137,13 @@ class WorkBuddyAdapter : ProviderAdapter {
             h.add("X-Domain" to (if (global) "www.workbuddy.ai" else "copilot.tencent.com"))
 
             if (includeConversation) {
-                // 会话头与 body 的 conversationId 由 transformRequest 同源生成
+                // 只保留官方 CLI 实际发送的会话头（多余的头反而会成为指纹差异）
                 val msgId = newHexId()
                 h.add("X-Conversation-ID" to convId)
                 h.add("X-Conversation-Request-ID" to convReqId)
                 h.add("X-Conversation-Message-ID" to msgId)
                 h.add("X-Request-ID" to msgId)
                 h.add("X-Root-Request-ID" to convReqId)
-                h.add("X-Trace-ID" to convReqId)
-                h.add("X-B3-TraceId" to convReqId)
-                h.add("X-B3-SpanId" to msgId.take(16))
-                h.add("X-B3-Sampled" to "1")
             }
         } else {
             // 计费/签到/任务：无部门信息
@@ -210,10 +206,6 @@ class WorkBuddyAdapter : ProviderAdapter {
             "X-Conversation-Message-ID" to msgId,
             "X-Request-ID" to msgId,
             "X-Root-Request-ID" to convReqId,
-            "X-Trace-ID" to convReqId,
-            "X-B3-TraceId" to convReqId,
-            "X-B3-SpanId" to msgId.take(16),
-            "X-B3-Sampled" to "1",
         )
 
         return RequestPayload(

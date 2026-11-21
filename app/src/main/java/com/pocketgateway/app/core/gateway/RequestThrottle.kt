@@ -15,10 +15,36 @@ import kotlin.random.Random
  */
 object RequestThrottle {
 
+    /** 每渠道每分钟最多 30 次上游请求（超出直接本地 429，避免爆发触发风控）。 */
+    private const val LIMIT_PER_MINUTE = 30
+
     private val mapMutex = Mutex()
     private val channelLocks = mutableMapOf<String, Mutex>()
     private val lastAt = mutableMapOf<String, Long>()
     private val modelUntil = mutableMapOf<String, Long>()
+    private val windowStart = mutableMapOf<String, Long>()
+    private val windowCount = mutableMapOf<String, Int>()
+
+    /**
+     * 速率闸门。返回 0 表示放行；>0 表示本地限流，应告知客户端稍后重试。
+     * 与 [before] 配合：先 acquire 再 before。
+     */
+    suspend fun acquire(channelId: String): Long = mapMutex.withLock {
+        val now = System.currentTimeMillis()
+        val start = windowStart[channelId] ?: now
+        if (now - start >= 60_000L) {
+            windowStart[channelId] = now
+            windowCount[channelId] = 1
+            return@withLock 0L
+        }
+        val used = windowCount[channelId] ?: 0
+        if (used >= LIMIT_PER_MINUTE) {
+            60_000L - (now - start)
+        } else {
+            windowCount[channelId] = used + 1
+            0L
+        }
+    }
 
     /** 请求前调用：同渠道串行 + 随机间隔。 */
     suspend fun before(channelId: String) {
