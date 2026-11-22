@@ -107,6 +107,16 @@ fun AppAccountScreen(vm: GatewayViewModel) {
         appAccounts.firstOrNull()
     }
 
+    // 固定账号模式下必须始终有一个有效选择，避免出现“单选模式但没选中任何账号”
+    LaunchedEffect(config.accountMode, config.preferredAccountId, accountChannels.map { it.id }) {
+        if (config.accountMode == AccountMode.SINGLE &&
+            accountChannels.isNotEmpty() &&
+            accountChannels.none { it.id == config.preferredAccountId }
+        ) {
+            vm.updateConfig { it.copy(preferredAccountId = accountChannels.first().id) }
+        }
+    }
+
     var info by remember { mutableStateOf<WorkBuddyApi.AccountInfo?>(null) }
     var loadingInfo by remember { mutableStateOf(false) }
     var probes by remember { mutableStateOf<List<WorkBuddyApi.ProbeResult>>(emptyList()) }
@@ -249,13 +259,24 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                             errorMsg = "请填写 Access Token"
                         } else {
                             val acc = AppAccounts.ALL.first()
-                            val ch = Channel(
+                            val token = manualToken.trim()
+                            val probe = Channel(
                                 id = Channel.newId(),
-                                name = "${acc.displayName}（手动）",
+                                name = "",
                                 type = ProviderType.APP_NATIVE,
                                 baseUrl = acc.baseUrlCn,
-                                apiKey = manualToken.trim(),
-                                appKind = "",
+                                apiKey = token,
+                            )
+                            val uid = com.pocketgateway.app.core.adapter.WorkBuddyAdapter()
+                                .resolveUid(probe)
+                            val identity = uid.ifBlank { token.takeLast(6) }
+                            val ch = Channel(
+                                id = probe.id,
+                                name = "${acc.displayName}（手动）· ${identity.takeLast(6)}",
+                                type = ProviderType.APP_NATIVE,
+                                baseUrl = acc.baseUrlCn,
+                                apiKey = token,
+                                appKind = uid,
                                 models = emptyList(),
                             )
                             vm.upsertChannel(ch)
@@ -280,7 +301,7 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                 Text(
                     "TRAE 不提供 API Key，只能用网页 OAuth 登录。点「登录 TRAE」打开授权页，" +
                         "授权完成后回到这里点「完成登录」；UserJWT 过期会自动用 RefreshToken 续期。" +
-                        "已启用账号级串行、随机请求间隔与限流冷却，降低账号被风控的概率。",
+                        "已启用账号级串行、随机间隔、每日上限与关机后仍保留的风控冷却。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -493,6 +514,67 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                                 }
                             },
                             label = { Text("固定账号") },
+                        )
+                    }
+
+                    if (config.accountMode == AccountMode.SINGLE) {
+                        HorizontalDivider()
+                        Text(
+                            "单选一个账号使用：",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        accountChannels.forEach { ch ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        vm.updateConfig {
+                                            it.copy(
+                                                accountMode = AccountMode.SINGLE,
+                                                preferredAccountId = ch.id,
+                                            )
+                                        }
+                                    }
+                                    .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                RadioButton(
+                                    selected = config.preferredAccountId == ch.id,
+                                    onClick = null,
+                                )
+                                Text(
+                                    accountTypeShort(ch),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (ch.type == ProviderType.TRAE) {
+                                        MaterialTheme.colorScheme.tertiary
+                                    } else {
+                                        MaterialTheme.colorScheme.secondary
+                                    },
+                                )
+                                Text(
+                                    ch.name,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                if (!ch.enabled) {
+                                    Text(
+                                        "已停用",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.error,
+                                    )
+                                }
+                            }
+                        }
+                        Text(
+                            "选中后只使用该账号；其他账号保留在账号池中，可随时切换。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
 
@@ -842,8 +924,9 @@ private fun AccountRowItem(
             }
 
             Text(
-                "$typeLabel · UID ${ch.appKind.ifBlank { "—" }} · " +
-                    "模型 ${ch.models.size} · 权重 ${ch.weight}",
+                "$typeLabel · ID ${
+                    ch.appKind.ifBlank { ch.apiKey.takeLast(6) }.ifBlank { ch.id.takeLast(6) }
+                } · 模型 ${ch.models.size} · 权重 ${ch.weight}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 40.dp),

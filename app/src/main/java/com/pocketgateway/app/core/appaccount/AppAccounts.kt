@@ -156,13 +156,22 @@ class DeviceAuthClient {
 }
 
 /** 由登录凭证生成「APP 账号直连」渠道。 */
-fun buildAppChannel(account: AppAccount, cred: WorkBuddyCredential): Channel = Channel(
-    id = Channel.newId(),
-    name = if (cred.nickname.isNotBlank()) "${account.displayName} · ${cred.nickname}"
-           else "${account.displayName}（账号直连）",
-    type = ProviderType.APP_NATIVE,
-    baseUrl = if (cred.realm == "global") account.baseUrlGlobal else account.baseUrlCn,
-    apiKey = cred.accessToken,
-    appKind = cred.uid,
-    models = account.models,
-)
+fun buildAppChannel(account: AppAccount, cred: WorkBuddyCredential): Channel {
+    // 同一客户端可能有多个账号，名称必须带可区分后缀，避免出现多个同名 WorkBuddy
+    val identity = cred.uid.ifBlank { cred.accessToken.takeLast(6) }
+    val suffix = identity.takeLast(6)
+    val baseName = if (cred.nickname.isNotBlank()) {
+        "${account.displayName} · ${cred.nickname}"
+    } else {
+        "${account.displayName} · 账号$suffix"
+    }
+    return Channel(
+        id = Channel.newId(),
+        name = if (cred.nickname.isNotBlank() && suffix.isNotBlank()) "$baseName ($suffix)" else baseName,
+        type = ProviderType.APP_NATIVE,
+        baseUrl = if (cred.realm == "global") account.baseUrlGlobal else account.baseUrlCn,
+        apiKey = cred.accessToken,
+        appKind = cred.uid,
+        models = account.models,
+    )
+}

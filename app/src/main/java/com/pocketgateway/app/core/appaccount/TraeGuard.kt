@@ -1,85 +1,144 @@
 package com.pocketgateway.app.core.appaccount
 
+import android.content.Context
 import com.pocketgateway.app.core.model.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import java.time.LocalDate
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.random.Random
 
 /**
  * TRAE 账号级防风控闸门。
  *
- * TRAE 是面向个人用户的 IDE/网页产品，上游对「同一账号的请求节奏」比较敏感。
- * 这里从行为层面降低被判定为脚本/滥用的概率：
+ * 在原有「串行 + 随机间隔 + 冷却」基础上继续加强：
  *
- *  - **账号级串行**：同一账号同一时刻只允许一个会话请求在跑，模拟人工一次一问；
- *  - **随机间隔**：两次请求之间保持 2.5–4.5 秒随机抖动，避免固定毫秒节奏；
- *  - **排队上限**：等待超过 90 秒直接失败，防止请求无限堆积后集中爆发；
- *  - **后台请求轻节流**：模型目录等后台请求单独限速，不与对话抢通道；
- *  - **刷新单飞 + 冷却**：Token 刷新同一账号只跑一个，失败后 10 分钟内不再反复
- *    触发 ExchangeToken，避免登录态被安全策略盯上。
+ *  - **账号级串行**：同一账号同一时刻只允许一个会话请求；
+ *  - **全局并发上限**：所有 TRAE 账号合计最多 2 个请求同时在跑，避免多账号同时爆发；
+ *  - **新账号热身**：每个账号前 10 次请求使用 6–10 秒更长间隔；
+ *  - **每日上限**：每账号每天最多 300 次会话请求，超过后本地直接拒绝；
+ *  - **冷却持久化**：风控冷却与刷新失败冷却写入 SharedPreferences，重启后仍生效；
+ *  - **刷新单飞**：同一账号只跑一个 ExchangeToken，失败冷却 10 分钟。
  *
- * 所有状态只存内存，进程重启自动复位。
+ * 所有计数按「账号」聚合（appKind/uid），同一账号的多个渠道共享额度。
+ * 状态仅用于本地保护，不上报任何第三方。
  */
 object TraeGuard {
 
     private const val CHAT_MIN_GAP_MS = 2_500L
     private const val CHAT_JITTER_MS = 2_000L
+    private const val WARMUP_MIN_GAP_MS = 6_000L
+    private const val WARMUP_JITTER_MS = 4_000L
+    private const val WARMUP_REQUESTS = 10
     private const val BG_MIN_GAP_MS = 1_200L
     private const val BG_JITTER_MS = 800L
     private const val ACQUIRE_TIMEOUT_MS = 90_000L
     private const val REFRESH_FAIL_COOLDOWN_MS = 10 * 60_000L
+    private const val DAILY_LIMIT = 300
+    private const val GLOBAL_CONCURRENCY = 2
 
     private val stateMutex = Mutex()
-    private val chatLocks = mutableMapOf<String, Mutex>()
-    private val chatLastAt = mutableMapOf<String, Long>()
+    private val chatLocks = ConcurrentHashMap<String, Mutex>()
+    private val chatLastAt = ConcurrentHashMap<String, Long>()
+    private val chatCounts = ConcurrentHashMap<String, Int>()
+    private val dailyCounts = ConcurrentHashMap<String, Pair<String, Int>>()
     private val bgLastAt = mutableMapOf<String, Long>()
     private val refreshLocks = mutableMapOf<String, Mutex>()
     private val refreshBlockedUntil = mutableMapOf<String, Long>()
     private val riskUntil = mutableMapOf<String, Long>()
+    private val globalPermits = Semaphore(GLOBAL_CONCURRENCY)
+
+    private var store: TraeGuardStore? = null
+
+    /** 在 Application 启动时调用，启用跨进程重启的持久化保护。 */
+    fun init(context: Context) {
+        store = runCatching { TraeGuardStore(context.applicationContext) }.getOrNull()
+    }
 
     private fun accountKey(ch: Channel): String =
         ch.appKind.ifBlank { ch.id }
 
-    /** 一次账号占用租约；[release] 可重复调用。 */
+    private fun today(): String = LocalDate.now().toString()
+
+    private fun dailyCount(key: String): Int =
+        store?.dailyCount(key) ?: dailyCounts[key]
+            ?.takeIf { it.first == today() }?.second ?: 0
+
+    private fun totalChatCount(key: String): Int =
+        chatCounts[key] ?: store?.totalChatCount(key) ?: 0
+
+    private suspend fun recordChat(key: String, startAt: Long, total: Int) {
+        val day = today()
+        val nextDaily = dailyCount(key) + 1
+        stateMutex.withLock {
+            chatLastAt[key] = startAt
+            chatCounts[key] = total
+            dailyCounts[key] = day to nextDaily
+        }
+        store?.recordChat(key, startAt, total, nextDaily)
+    }
+
+    /** 一次账号占用租约；[release] 可重复调用，同时归还全局并发名额。 */
     class Lease internal constructor(
         private val lock: Mutex,
+        private val permit: Semaphore,
         private val released: AtomicBoolean = AtomicBoolean(false),
     ) {
         fun release() {
             if (released.compareAndSet(false, true)) {
                 runCatching { lock.unlock() }
+                runCatching { permit.release() }
             }
         }
     }
 
     /**
-     * 取得该账号的对话独占权，并保证与上一次请求的随机间隔。
-     * 等待超过 90 秒会抛异常，由网关转为可读错误，避免请求无限堆积。
+     * 取得该账号的对话独占权，并保证随机间隔 / 热身间隔 / 每日上限 / 全局并发。
+     * 等待超过 90 秒会抛异常，由网关转为可读错误。
      */
     suspend fun leaseChat(ch: Channel): Lease {
         val key = accountKey(ch)
+        val usedToday = dailyCount(key)
+        if (usedToday >= DAILY_LIMIT) {
+            throw IllegalStateException(
+                "TRAE 账号今日请求已达安全上限（$DAILY_LIMIT 次），请明日再试"
+            )
+        }
+
+        val acquired = withTimeoutOrNull(ACQUIRE_TIMEOUT_MS) { globalPermits.acquire() }
+            ?: throw IllegalStateException("TRAE 全局并发已满（防风控限制），请稍后重试")
+
         val lock = stateMutex.withLock { chatLocks.getOrPut(key) { Mutex() } }
-        withTimeoutOrNull(ACQUIRE_TIMEOUT_MS) { lock.lock() }
-            ?: throw IllegalStateException("TRAE 账号请求排队超时（防风控串行中），请稍后重试")
+        val accountLocked = withTimeoutOrNull(ACQUIRE_TIMEOUT_MS) { lock.lock() }
+        if (accountLocked == null) {
+            runCatching { globalPermits.release() }
+            throw IllegalStateException("TRAE 账号请求排队超时（防风控串行中），请稍后重试")
+        }
 
         try {
-            val wait = stateMutex.withLock {
-                val now = System.currentTimeMillis()
-                val gap = CHAT_MIN_GAP_MS + Random.nextLong(0, CHAT_JITTER_MS)
-                val last = chatLastAt[key] ?: 0L
-                val w = (gap - (now - last)).coerceAtLeast(0L)
-                chatLastAt[key] = now + w
-                w
+            val total = totalChatCount(key)
+            val warmup = total < WARMUP_REQUESTS
+            val gap = if (warmup) {
+                WARMUP_MIN_GAP_MS + Random.nextLong(0, WARMUP_JITTER_MS)
+            } else {
+                CHAT_MIN_GAP_MS + Random.nextLong(0, CHAT_JITTER_MS)
             }
+            val now = System.currentTimeMillis()
+            val last = chatLastAt[key] ?: store?.lastChatAt(key) ?: 0L
+            val wait = (gap - (now - last)).coerceAtLeast(0L)
+            recordChat(key, now + wait, total + 1)
             if (wait > 0) delay(wait)
         } catch (e: Exception) {
             runCatching { lock.unlock() }
+            runCatching { globalPermits.release() }
             throw e
         }
-        return Lease(lock)
+
+        return Lease(lock, globalPermits)
     }
 
     /** 后台请求（模型目录等）的轻量节流：只保证最小间隔，不独占账号。 */
@@ -99,25 +158,26 @@ object TraeGuard {
     /** 记录一次风控冷却；冷却期内 [TraeApi] 不再向该账号发任何请求。 */
     suspend fun markRisk(ch: Channel, durationMs: Long) {
         val key = accountKey(ch)
-        val until = System.currentTimeMillis() +
-            durationMs.coerceIn(10_000L, 30 * 60_000L)
+        val until = System.currentTimeMillis() + durationMs.coerceIn(10_000L, 30 * 60_000L)
         stateMutex.withLock {
             riskUntil[key] = maxOf(riskUntil[key] ?: 0L, until)
         }
+        store?.setRiskUntil(key, until)
     }
 
     /** 剩余风控冷却毫秒数；0 表示可请求。 */
-    suspend fun riskRemaining(ch: Channel): Long = stateMutex.withLock {
-        ((riskUntil[accountKey(ch)] ?: 0L) - System.currentTimeMillis()).coerceAtLeast(0L)
+    suspend fun riskRemaining(ch: Channel): Long {
+        val key = accountKey(ch)
+        val memory = stateMutex.withLock { riskUntil[key] ?: 0L }
+        val persisted = store?.riskUntil(key) ?: 0L
+        return (maxOf(memory, persisted) - System.currentTimeMillis()).coerceAtLeast(0L)
     }
 
-    /** 重新登录/换号成功后清除该账号的风控与刷新失败状态。 */
-    suspend fun resetAccountState(ch: Channel) {
+    /** 成功完成后清除风控冷却。 */
+    suspend fun clearRisk(ch: Channel) {
         val key = accountKey(ch)
-        stateMutex.withLock {
-            riskUntil.remove(key)
-            refreshBlockedUntil.remove(key)
-        }
+        stateMutex.withLock { riskUntil.remove(key) }
+        store?.clearRisk(key)
     }
 
     /**
@@ -128,19 +188,68 @@ object TraeGuard {
         val key = accountKey(ch)
         val lock = stateMutex.withLock { refreshLocks.getOrPut(key) { Mutex() } }
         return lock.withLock {
+            val now = System.currentTimeMillis()
             val blocked = stateMutex.withLock {
-                (refreshBlockedUntil[key] ?: 0L) > System.currentTimeMillis()
-            }
+                (refreshBlockedUntil[key] ?: 0L) > now
+            } || (store?.refreshBlockedUntil(key) ?: 0L) > now
             if (blocked) return@withLock null
+
             val result = block()
             if (result == null) {
-                stateMutex.withLock {
-                    refreshBlockedUntil[key] = System.currentTimeMillis() + REFRESH_FAIL_COOLDOWN_MS
-                }
+                val until = System.currentTimeMillis() + REFRESH_FAIL_COOLDOWN_MS
+                stateMutex.withLock { refreshBlockedUntil[key] = until }
+                store?.setRefreshBlockedUntil(key, until)
             } else {
                 stateMutex.withLock { refreshBlockedUntil.remove(key) }
+                store?.clearRefreshBlocked(key)
             }
             result
         }
+    }
+}
+
+/** TRAE 防风控状态的轻量持久化（SharedPreferences），重启后仍保留冷却与每日计数。 */
+private class TraeGuardStore(context: Context) {
+
+    private val prefs = context.getSharedPreferences("trae_guard", Context.MODE_PRIVATE)
+
+    private fun today(): String = LocalDate.now().toString()
+
+    fun lastChatAt(key: String): Long = prefs.getLong("last_$key", 0L)
+
+    fun totalChatCount(key: String): Int = prefs.getInt("total_$key", 0)
+
+    fun dailyCount(key: String): Int {
+        if (prefs.getString("daily_date_$key", "") != today()) return 0
+        return prefs.getInt("daily_$key", 0)
+    }
+
+    fun recordChat(key: String, lastAt: Long, total: Int, daily: Int) {
+        prefs.edit()
+            .putLong("last_$key", lastAt)
+            .putInt("total_$key", total)
+            .putString("daily_date_$key", today())
+            .putInt("daily_$key", daily)
+            .apply()
+    }
+
+    fun riskUntil(key: String): Long = prefs.getLong("risk_$key", 0L)
+
+    fun setRiskUntil(key: String, until: Long) {
+        prefs.edit().putLong("risk_$key", until).apply()
+    }
+
+    fun clearRisk(key: String) {
+        prefs.edit().remove("risk_$key").apply()
+    }
+
+    fun refreshBlockedUntil(key: String): Long = prefs.getLong("refresh_$key", 0L)
+
+    fun setRefreshBlockedUntil(key: String, until: Long) {
+        prefs.edit().putLong("refresh_$key", until).apply()
+    }
+
+    fun clearRefreshBlocked(key: String) {
+        prefs.edit().remove("refresh_$key").apply()
     }
 }

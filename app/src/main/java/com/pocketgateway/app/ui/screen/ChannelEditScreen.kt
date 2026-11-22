@@ -601,7 +601,11 @@ fun ChannelEditDialog(
                     signAlgorithm = signAlgorithm.trim(),
                     signTemplate = signTemplate,
                     signKey = signKey,
-                    appKind = appKind.trim(),
+                    appKind = if (type == ProviderType.TRAE && appKind.isBlank() && apiKey.isNotBlank()) {
+                        com.pocketgateway.app.core.appaccount.TraeAuth.uidFromJwt(apiKey)
+                    } else {
+                        appKind.trim()
+                    },
                     deviceToken = deviceToken.trim(),
                     refreshToken = refreshToken.trim(),
                     sanitizeEnabled = sanitizeEnabled,

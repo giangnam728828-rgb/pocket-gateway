@@ -170,8 +170,15 @@ class GatewayServer(
 
     // ---- 路由选择 ----
 
-    private fun selectChannels(cfg: GatewayConfig, model: String?): List<Channel> {
+    private fun selectChannels(
+        cfg: GatewayConfig,
+        model: String?,
+        typeFilter: ProviderType? = null,
+    ): List<Channel> {
         var list = cfg.channels.filter { it.enabled && it.baseUrl.isNotBlank() }
+        if (typeFilter != null) {
+            list = list.filter { it.type == typeFilter }
+        }
 
         // 固定账号模式：WorkBuddy 与 TRAE 都属于「APP 账号」，只保留指定账号；
         // 该账号不可用时回退到账号池，避免用户误把唯一账号停用后整条链路无路可走。
@@ -213,6 +220,27 @@ class GatewayServer(
         return filter { seen.add(it.id) }
     }
 
+    /** 客户端可见模型名：APP 账号模型带平台前缀，避免 WorkBuddy / TRAE 同名混淆。 */
+    private fun exposedModelId(ch: Channel, model: String): String = when (ch.type) {
+        ProviderType.APP_NATIVE -> "workbuddy/$model"
+        ProviderType.TRAE -> "trae/$model"
+        else -> model
+    }
+
+    private data class ModelRoute(val type: ProviderType?, val model: String)
+
+    /** 解析 workbuddy/xxx、trae/xxx 前缀；无前缀保持原行为（兼容旧客户端）。 */
+    private fun parseModelRoute(raw: String?): ModelRoute {
+        val value = raw.orEmpty()
+        return when {
+            value.startsWith("workbuddy/", ignoreCase = true) ->
+                ModelRoute(ProviderType.APP_NATIVE, value.substringAfter('/'))
+            value.startsWith("trae/", ignoreCase = true) ->
+                ModelRoute(ProviderType.TRAE, value.substringAfter('/'))
+            else -> ModelRoute(null, value)
+        }
+    }
+
     /**
      * 从候选中剔除处于冷却的渠道；若全部在冷却则退回原列表，
      * 避免出现“所有渠道都被冷却导致彻底无路可走”的情况。
@@ -249,20 +277,42 @@ class GatewayServer(
         if (!authorized(cfg)) return respondUnauthorized()
 
         val ids = linkedSetOf<String>()
-        cfg.channels.filter { it.enabled }.forEach { ch ->
-            ch.models.forEach { m -> ids.add(m) }
-            ch.modelMapping.keys.forEach { k -> ids.add(k) }
+        val owners = linkedMapOf<String, String>()
+        fun addModel(id: String, owner: String) {
+            if (id.isBlank()) return
+            ids.add(id)
+            owners.putIfAbsent(id, owner)
         }
-        // 模型列表为空时给出可用兜底，否则客户端“获取模型”会判失败/空列表
+        cfg.channels.filter { it.enabled }.forEach { ch ->
+            val owner = when (ch.type) {
+                ProviderType.APP_NATIVE -> "workbuddy"
+                ProviderType.TRAE -> "trae"
+                else -> "pocketgateway"
+            }
+            ch.models.forEach { m -> addModel(exposedModelId(ch, m), owner) }
+            ch.modelMapping.keys.forEach { m -> addModel(exposedModelId(ch, m), owner) }
+            // 单个渠道模型为空时也给该平台一个兜底，避免刚登录 TRAE 还没同步模型时模型列表里看不到它
+            if (ch.models.isEmpty() && ch.modelMapping.isEmpty()) {
+                when (ch.type) {
+                    ProviderType.APP_NATIVE -> {
+                        addModel("workbuddy/glm-5.2", "workbuddy")
+                        addModel("workbuddy/deepseek-v4-flash", "workbuddy")
+                    }
+                    ProviderType.TRAE -> addModel("trae/auto", "trae")
+                    else -> addModel("gpt-4o", "pocketgateway")
+                }
+            }
+        }
+        // 没有任何可用渠道时给出通用兜底
         if (ids.isEmpty()) {
             cfg.channels.filter { it.enabled }.forEach { ch ->
                 when (ch.type) {
                     ProviderType.APP_NATIVE -> {
-                        ids.add("glm-5.2")
-                        ids.add("deepseek-v4-flash")
+                        addModel("workbuddy/glm-5.2", "workbuddy")
+                        addModel("workbuddy/deepseek-v4-flash", "workbuddy")
                     }
-                    ProviderType.TRAE -> ids.add("auto")
-                    else -> ids.add("gpt-4o")
+                    ProviderType.TRAE -> addModel("trae/auto", "trae")
+                    else -> addModel("gpt-4o", "pocketgateway")
                 }
             }
         }
@@ -273,7 +323,7 @@ class GatewayServer(
                     put("id", id)
                     put("object", "model")
                     put("created", System.currentTimeMillis() / 1000)
-                    put("owned_by", "pocketgateway")
+                    put("owned_by", owners[id] ?: "pocketgateway")
                 })
             }
         }
@@ -297,8 +347,17 @@ class GatewayServer(
         }
         val body: JsonObject = parsed
 
-        val model = body.modelName()
-        val candidates = selectChannels(cfg, model).excludeCooling(model)
+        val requestedModel = body.modelName()
+        val route = parseModelRoute(requestedModel)
+        val model = route.model
+        // 带平台前缀的模型（workbuddy/xxx、trae/xxx）在路由时只匹配对应平台，
+        // 发给上游前去掉前缀，避免上游收到不存在的模型名。
+        val upstreamBody = if (route.type != null && !requestedModel.isNullOrBlank()) {
+            body.withString("model", route.model)
+        } else {
+            body
+        }
+        val candidates = selectChannels(cfg, model, route.type).excludeCooling(model)
         if (candidates.isEmpty()) {
             return respondError(
                 HttpStatusCode.ServiceUnavailable,
@@ -314,7 +373,10 @@ class GatewayServer(
         var lastError = ""
         var lastTraeRetryMs = 0L
         var lastWorkBuddyRetryMs = 0L
+        var skipTraeOnRisk = false
         for (channel in candidates) {
+            // TRAE 命中风控后，本次请求不再轮换到其他 TRAE 账号，避免快速账号跳跃
+            if (skipTraeOnRisk && channel.type == ProviderType.TRAE) continue
             // APP 账号直连渠道：凭证为空时直接给出明确原因，避免上游返回 302/401 让用户困惑
             if (channel.type == com.pocketgateway.app.core.model.ProviderType.APP_NATIVE &&
                 channel.apiKey.isBlank()
@@ -326,7 +388,7 @@ class GatewayServer(
                 )
             }
             val adapter = AdapterRegistry.get(channel)
-            val payload = runCatching { adapter.transformRequest(channel, body, wantStream) }
+            val payload = runCatching { adapter.transformRequest(channel, upstreamBody, wantStream) }
                 .getOrElse {
                     lastError = "transform error: ${it.message}"
                     null
@@ -504,7 +566,7 @@ class GatewayServer(
                     }
 
                     RequestThrottle.before(traeChannel.id)
-                    var stream = TraeApi.open(traeChannel, body, timeout)
+                    var stream = TraeApi.open(traeChannel, upstreamBody, timeout)
                     // 仅 401 视为凭证过期；403 更可能是额度/风控，刷新反而增加异常请求
                     if (stream.status == 401) {
                         stream.close()
@@ -516,7 +578,7 @@ class GatewayServer(
                                 appKind = traeChannel.appKind.ifBlank { refreshed.uid },
                             )
                             configStore.upsertChannel(traeChannel)
-                            stream = TraeApi.open(traeChannel, body, timeout)
+                            stream = TraeApi.open(traeChannel, upstreamBody, timeout)
                         }
                     }
                     if (stream.status !in 200..299) {
@@ -527,6 +589,7 @@ class GatewayServer(
                         val bodyRisk = TraeApi.isRiskText(errBody)
                         val localRiskBlock = errBody.contains("账号风控冷却中")
                         if (localRiskBlock) lastTraeRetryMs = maxOf(lastTraeRetryMs, retryAfter)
+                        if (st == 429 || st == 403 || bodyRisk) skipTraeOnRisk = true
                         when {
                             // 本地冷却短路：不再叠加惩罚，避免客户端重试导致冷却时间被无限放大
                             localRiskBlock -> Unit
@@ -632,6 +695,7 @@ class GatewayServer(
                                                 runCatching {
                                                     cooldown.clear(traeChannel.id)
                                                     RequestThrottle.clearModel(traeChannel.id, model)
+                                                    TraeGuard.clearRisk(traeChannel)
                                                 }
                                             }
                                             Unit
@@ -660,10 +724,12 @@ class GatewayServer(
                             val d = cooldown.penalize(traeChannel.id, 429, maxOf(retryAfter, 180_000L))
                             TraeGuard.markRisk(traeChannel, d)
                             lastTraeRetryMs = maxOf(lastTraeRetryMs, d)
+                            skipTraeOnRisk = true
                             RequestThrottle.penalizeModel(traeChannel.id, model, 120_000L)
                         } else if (agg.completed && agg.error.isBlank()) {
                             cooldown.clear(traeChannel.id)
                             RequestThrottle.clearModel(traeChannel.id, model)
+                            TraeGuard.clearRisk(traeChannel)
                         }
                         if (agg.text.isBlank() && agg.error.isNotBlank()) {
                             log(
@@ -842,8 +908,15 @@ class GatewayServer(
             return respondError(HttpStatusCode.BadRequest, "invalid_request", "Malformed JSON")
         }
         val body: JsonObject = parsed
-        val model = body.modelName()
-        val candidates = selectChannels(cfg, model)
+        val requestedModel = body.modelName()
+        val route = parseModelRoute(requestedModel)
+        val model = route.model
+        val upstreamBody = if (route.type != null && !requestedModel.isNullOrBlank()) {
+            body.withString("model", route.model)
+        } else {
+            body
+        }
+        val candidates = selectChannels(cfg, model, route.type)
             .filter { it.type == ProviderType.OPENAI_COMPAT }
             .excludeCooling(model)
         if (candidates.isEmpty()) {
@@ -852,9 +925,9 @@ class GatewayServer(
 
         var lastError = ""
         for (channel in candidates) {
-            val mapped = body.modelName()?.let { m ->
-                channel.modelMapping[m]?.let { body.withString("model", it) }
-            } ?: body
+            val mapped = upstreamBody.modelName()?.let { m ->
+                channel.modelMapping[m]?.let { upstreamBody.withString("model", it) }
+            } ?: upstreamBody
             val payload = RequestPayload(AppJson.encodeToString(JsonObject.serializer(), mapped))
             val timeout = if (channel.timeoutMs > 0) channel.timeoutMs else cfg.defaultTimeoutMs
             try {

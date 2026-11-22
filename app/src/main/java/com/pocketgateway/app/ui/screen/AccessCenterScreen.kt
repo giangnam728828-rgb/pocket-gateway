@@ -104,7 +104,8 @@ fun AccessCenterScreen(vm: GatewayViewModel) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("接入信息", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Text(
-                    "含 /v1 与不含 /v1 两种地址都有，按下面各客户端的提示选择。点任意一行可复制。",
+                    "含 /v1 与不含 /v1 两种地址都有，按下面各客户端的提示选择。点任意一行可复制。" +
+                        "模型列表中 WorkBuddy 以 workbuddy/ 开头，TRAE 以 trae/ 开头，避免同名混淆。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

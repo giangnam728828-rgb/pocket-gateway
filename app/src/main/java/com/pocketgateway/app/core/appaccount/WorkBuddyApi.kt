@@ -173,6 +173,7 @@ object WorkBuddyApi {
      *     或 maxOutputTokens <= 256，或 tags 含 text-to-image
      */
     suspend fun fetchModels(ch: Channel): Result<List<ModelRow>> = withContext(Dispatchers.IO) {
+        val expectedModels = ch.models.map { it.removePrefix("workbuddy/") }
         val base = resolveBase(ch)
         if (base.isBlank()) {
             return@withContext Result.failure(IllegalStateException("Base URL 为空"))
@@ -195,7 +196,14 @@ object WorkBuddyApi {
                 continue
             }
             val rows = parseUsableModels(data)
-            if (rows.isNotEmpty()) return@withContext Result.success(rows)
+            if (rows.isNotEmpty()) {
+                // 保持对外模型名（含前缀）稳定：上游返回的配置名可能与渠道里保存的别名大小写/写法不同
+                val normalized = rows.map { row ->
+                    val canonical = expectedModels.firstOrNull { it.equals(row.id, ignoreCase = true) }
+                    if (canonical != null && canonical != row.id) row.copy(id = canonical) else row
+                }
+                return@withContext Result.success(normalized)
+            }
             lastErr = "未解析到可用模型：${text.take(160)}"
         }
         Result.failure(IllegalStateException(lastErr))

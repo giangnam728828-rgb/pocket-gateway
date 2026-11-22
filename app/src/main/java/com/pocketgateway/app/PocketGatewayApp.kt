@@ -1,6 +1,7 @@
 package com.pocketgateway.app
 
 import android.app.Application
+import com.pocketgateway.app.core.appaccount.TraeGuard
 import com.pocketgateway.app.core.scheduler.CheckInScheduler
 import com.pocketgateway.app.core.store.ConfigStore
 import com.pocketgateway.app.core.store.LogStore
@@ -34,6 +35,9 @@ class PocketGatewayApp : Application() {
         configStore = ConfigStore(this)
         logStore = LogStore { configStore.config.value.maxLogEntries }
         usageDb = UsageDatabase(this)
+
+        // TRAE 防风控状态持久化：冷却、每日计数跨进程重启保留
+        runCatching { TraeGuard.init(this) }
 
         // 等首次配置加载完成后再同步，避免用空配置误取消已注册的周期任务。
         checkInScheduler = CheckInScheduler(this)

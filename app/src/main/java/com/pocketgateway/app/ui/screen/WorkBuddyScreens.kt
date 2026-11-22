@@ -55,7 +55,25 @@ fun currentAppChannel(vm: GatewayViewModel): Channel? =
 fun OverviewScreen(vm: GatewayViewModel) {
     val config by vm.config.collectAsState()
     val ctx = LocalContext.current
-    val appCh = config.channels.firstOrNull { it.type == ProviderType.APP_NATIVE }
+    val activeAccounts = config.channels.filter {
+        it.type == ProviderType.APP_NATIVE || it.type == ProviderType.TRAE
+    }
+    val pinned = activeAccounts.firstOrNull { it.id == config.preferredAccountId }
+    val active = if (config.accountMode == com.pocketgateway.app.core.model.AccountMode.SINGLE &&
+        pinned != null
+    ) {
+        listOf(pinned)
+    } else {
+        activeAccounts.filter { it.enabled }
+    }
+    val activeLabel = if (active.isEmpty()) {
+        "尚未登录账号"
+    } else {
+        active.joinToString("、") { ch ->
+            val type = if (ch.type == ProviderType.TRAE) "TRAE" else "WorkBuddy"
+            "$type「${ch.name}」"
+        }
+    }
 
     LaunchedEffect(Unit) { vm.ensureAccessToken() }
 
@@ -134,7 +152,7 @@ fun OverviewScreen(vm: GatewayViewModel) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Text(
-                    "已接入：${appCh?.name ?: "尚未登录账号"}",
+                    "已接入：$activeLabel",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 if (running) {
