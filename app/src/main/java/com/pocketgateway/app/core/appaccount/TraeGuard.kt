@@ -39,6 +39,7 @@ object TraeGuard {
     private const val ACQUIRE_TIMEOUT_MS = 90_000L
     private const val REFRESH_FAIL_COOLDOWN_MS = 10 * 60_000L
     private const val DAILY_LIMIT = 300
+    private const val HOURLY_LIMIT = 60
     private const val GLOBAL_CONCURRENCY = 2
 
     private val stateMutex = Mutex()
@@ -46,6 +47,7 @@ object TraeGuard {
     private val chatLastAt = ConcurrentHashMap<String, Long>()
     private val chatCounts = ConcurrentHashMap<String, Int>()
     private val dailyCounts = ConcurrentHashMap<String, Pair<String, Int>>()
+    private val hourlyCounts = ConcurrentHashMap<String, Pair<Long, Int>>()
     private val bgLastAt = mutableMapOf<String, Long>()
     private val refreshLocks = mutableMapOf<String, Mutex>()
     private val refreshBlockedUntil = mutableMapOf<String, Long>()
@@ -64,22 +66,31 @@ object TraeGuard {
 
     private fun today(): String = LocalDate.now().toString()
 
+    private fun hourBucket(): Long = System.currentTimeMillis() / 3_600_000L
+
     private fun dailyCount(key: String): Int =
         store?.dailyCount(key) ?: dailyCounts[key]
             ?.takeIf { it.first == today() }?.second ?: 0
+
+    private fun hourlyCount(key: String): Int =
+        store?.hourlyCount(key) ?: hourlyCounts[key]
+            ?.takeIf { it.first == hourBucket() }?.second ?: 0
 
     private fun totalChatCount(key: String): Int =
         chatCounts[key] ?: store?.totalChatCount(key) ?: 0
 
     private suspend fun recordChat(key: String, startAt: Long, total: Int) {
         val day = today()
+        val hour = hourBucket()
         val nextDaily = dailyCount(key) + 1
+        val nextHourly = hourlyCount(key) + 1
         stateMutex.withLock {
             chatLastAt[key] = startAt
             chatCounts[key] = total
             dailyCounts[key] = day to nextDaily
+            hourlyCounts[key] = hour to nextHourly
         }
-        store?.recordChat(key, startAt, total, nextDaily)
+        store?.recordChat(key, startAt, total, nextDaily, nextHourly)
     }
 
     /** 一次账号占用租约；[release] 可重复调用，同时归还全局并发名额。 */
@@ -106,6 +117,11 @@ object TraeGuard {
         if (usedToday >= DAILY_LIMIT) {
             throw IllegalStateException(
                 "TRAE 账号今日请求已达安全上限（$DAILY_LIMIT 次），请明日再试"
+            )
+        }
+        if (hourlyCount(key) >= HOURLY_LIMIT) {
+            throw IllegalStateException(
+                "TRAE 账号本小时请求已达安全上限（$HOURLY_LIMIT 次），请稍后重试"
             )
         }
 
@@ -215,6 +231,8 @@ private class TraeGuardStore(context: Context) {
 
     private fun today(): String = LocalDate.now().toString()
 
+    private fun hourBucket(): Long = System.currentTimeMillis() / 3_600_000L
+
     fun lastChatAt(key: String): Long = prefs.getLong("last_$key", 0L)
 
     fun totalChatCount(key: String): Int = prefs.getInt("total_$key", 0)
@@ -224,12 +242,19 @@ private class TraeGuardStore(context: Context) {
         return prefs.getInt("daily_$key", 0)
     }
 
-    fun recordChat(key: String, lastAt: Long, total: Int, daily: Int) {
+    fun hourlyCount(key: String): Int {
+        if (prefs.getLong("hour_bucket_$key", -1L) != hourBucket()) return 0
+        return prefs.getInt("hour_$key", 0)
+    }
+
+    fun recordChat(key: String, lastAt: Long, total: Int, daily: Int, hourly: Int) {
         prefs.edit()
             .putLong("last_$key", lastAt)
             .putInt("total_$key", total)
             .putString("daily_date_$key", today())
             .putInt("daily_$key", daily)
+            .putLong("hour_bucket_$key", hourBucket())
+            .putInt("hour_$key", hourly)
             .apply()
     }
 

@@ -66,16 +66,31 @@ class ConfigStore(private val context: Context) {
      */
     private fun normalize(cfg: GatewayConfig): GatewayConfig {
         val fixed = cfg.channels.map { ch ->
+            var out = ch
             when {
                 ch.type == com.pocketgateway.app.core.model.ProviderType.APP_NATIVE -> {
                     val global = ch.baseUrl.contains("workbuddy.ai", true) || ch.name.contains("国际")
                     val base = if (global) "https://www.workbuddy.ai" else "https://copilot.tencent.com"
-                    if (ch.baseUrl != base) ch.copy(baseUrl = base) else ch
+                    if (ch.baseUrl != base) out = out.copy(baseUrl = base)
                 }
                 ch.type == com.pocketgateway.app.core.model.ProviderType.TRAE && ch.baseUrl.isBlank() ->
-                    ch.copy(baseUrl = "https://trae-api-cn.mchost.guru")
-                else -> ch
+                    out = out.copy(baseUrl = "https://trae-api-cn.mchost.guru")
             }
+
+            // 同一客户端可能有多个账号：旧渠道名没有区分标识时，补一次稳定的 ID 后缀。
+            // 只追加一次（名称里已有 ID: 或该后缀时跳过），不会反复改用户名称。
+            if (out.type == com.pocketgateway.app.core.model.ProviderType.APP_NATIVE ||
+                out.type == com.pocketgateway.app.core.model.ProviderType.TRAE
+            ) {
+                val identity = out.appKind.ifBlank { out.apiKey.takeLast(6) }
+                if (identity.length >= 4) {
+                    val suffix = identity.takeLast(6)
+                    if (!out.name.contains("ID:") && !out.name.contains(suffix)) {
+                        out = out.copy(name = "${out.name} · ID:$suffix")
+                    }
+                }
+            }
+            out
         }
         return if (fixed == cfg.channels) cfg else cfg.copy(channels = fixed)
     }

@@ -143,7 +143,7 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                 Text("WorkBuddy 账号", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Text(
                     "WorkBuddy / CodeBuddy 设备授权登录（OAuth），无需 API Key。" +
-                        "已启用账号级串行、随机请求间隔与风控冷却。",
+                        "已启用账号级串行、随机间隔、每日/每小时上限与持久化风控冷却。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -301,7 +301,7 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                 Text(
                     "TRAE 不提供 API Key，只能用网页 OAuth 登录。点「登录 TRAE」打开授权页，" +
                         "授权完成后回到这里点「完成登录」；UserJWT 过期会自动用 RefreshToken 续期。" +
-                        "已启用账号级串行、随机间隔、每日上限与关机后仍保留的风控冷却。",
+                        "已启用账号级串行、随机间隔、每日/每小时上限与关机后仍保留的风控冷却。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -545,7 +545,13 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                                     onClick = null,
                                 )
                                 Text(
-                                    accountTypeShort(ch),
+                                    "${accountTypeShort(ch)} #${
+                                        if (ch.type == ProviderType.TRAE) {
+                                            traeAccounts.indexOf(ch) + 1
+                                        } else {
+                                            appAccounts.indexOf(ch) + 1
+                                        }
+                                    }",
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold,
                                     color = if (ch.type == ProviderType.TRAE) {
@@ -572,7 +578,8 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                             }
                         }
                         Text(
-                            "选中后只使用该账号；其他账号保留在账号池中，可随时切换。",
+                            "选中后只使用该账号；其他账号保留在账号池中，可随时切换。" +
+                                "模型列表也会只显示该账号（以及官方 API 渠道）的模型。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -611,6 +618,7 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                             AccountRowItem(
                                 ch = ch,
                                 typeLabel = "WorkBuddy",
+                                accountIndex = appAccounts.indexOf(ch) + 1,
                                 pinned = config.accountMode == AccountMode.SINGLE &&
                                     config.preferredAccountId == ch.id,
                                 onPin = {
@@ -636,6 +644,7 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                             AccountRowItem(
                                 ch = ch,
                                 typeLabel = "WorkBuddy",
+                                accountIndex = appAccounts.indexOf(ch) + 1,
                                 pinned = config.accountMode == AccountMode.SINGLE &&
                                     config.preferredAccountId == ch.id,
                                 onPin = {
@@ -661,6 +670,7 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                             AccountRowItem(
                                 ch = ch,
                                 typeLabel = "TRAE",
+                                accountIndex = traeAccounts.indexOf(ch) + 1,
                                 pinned = config.accountMode == AccountMode.SINGLE &&
                                     config.preferredAccountId == ch.id,
                                 onPin = {
@@ -826,6 +836,7 @@ fun AppAccountScreen(vm: GatewayViewModel) {
 private fun AccountRowItem(
     ch: Channel,
     typeLabel: String,
+    accountIndex: Int,
     pinned: Boolean,
     onPin: () -> Unit,
     onToggle: (Boolean) -> Unit,
@@ -855,16 +866,16 @@ private fun AccountRowItem(
             ) {
                 RadioButton(selected = pinned, onClick = null)
 
-                // 类型头像：W / T，快速区分是哪个平台
+                // 类型头像：W1 / W2 / T1，多个同平台账号也能一眼区分
                 Box(
                     modifier = Modifier
-                        .size(28.dp)
+                        .size(30.dp)
                         .background(typeContainer, CircleShape),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
-                        if (isTrae) "T" else "W",
-                        style = MaterialTheme.typography.labelMedium,
+                        (if (isTrae) "T" else "W") + accountIndex,
+                        style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
                         color = typeColor,
                     )
@@ -876,7 +887,7 @@ private fun AccountRowItem(
                         .padding(horizontal = 6.dp, vertical = 2.dp),
                 ) {
                     Text(
-                        typeLabel,
+                        "$typeLabel #$accountIndex",
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
                         color = typeColor,
@@ -924,7 +935,7 @@ private fun AccountRowItem(
             }
 
             Text(
-                "$typeLabel · ID ${
+                "$typeLabel #$accountIndex · ID ${
                     ch.appKind.ifBlank { ch.apiKey.takeLast(6) }.ifBlank { ch.id.takeLast(6) }
                 } · 模型 ${ch.models.size} · 权重 ${ch.weight}",
                 style = MaterialTheme.typography.bodySmall,

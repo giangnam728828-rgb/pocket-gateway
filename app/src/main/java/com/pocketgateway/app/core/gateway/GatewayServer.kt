@@ -276,6 +276,20 @@ class GatewayServer(
         val cfg = configStore.config.value
         if (!authorized(cfg)) return respondUnauthorized()
 
+        // 固定账号模式下，模型列表只展示该账号所属平台的模型（以及官方 API 渠道），
+        // 避免选中 TRAE 时列表里还混入 WorkBuddy 模型。
+        val pinnedApp = if (cfg.accountMode == com.pocketgateway.app.core.model.AccountMode.SINGLE) {
+            cfg.channels.firstOrNull {
+                (it.type == ProviderType.APP_NATIVE || it.type == ProviderType.TRAE) &&
+                    it.id == cfg.preferredAccountId && it.enabled
+            }
+        } else null
+        val eligibleChannels = cfg.channels.filter { it.enabled }.filter { ch ->
+            pinnedApp == null ||
+                (ch.type != ProviderType.APP_NATIVE && ch.type != ProviderType.TRAE) ||
+                ch.id == pinnedApp.id
+        }
+
         val ids = linkedSetOf<String>()
         val owners = linkedMapOf<String, String>()
         fun addModel(id: String, owner: String) {
@@ -283,7 +297,7 @@ class GatewayServer(
             ids.add(id)
             owners.putIfAbsent(id, owner)
         }
-        cfg.channels.filter { it.enabled }.forEach { ch ->
+        eligibleChannels.forEach { ch ->
             val owner = when (ch.type) {
                 ProviderType.APP_NATIVE -> "workbuddy"
                 ProviderType.TRAE -> "trae"
@@ -305,7 +319,7 @@ class GatewayServer(
         }
         // 没有任何可用渠道时给出通用兜底
         if (ids.isEmpty()) {
-            cfg.channels.filter { it.enabled }.forEach { ch ->
+            eligibleChannels.forEach { ch ->
                 when (ch.type) {
                     ProviderType.APP_NATIVE -> {
                         addModel("workbuddy/glm-5.2", "workbuddy")
