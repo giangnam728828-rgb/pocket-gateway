@@ -132,7 +132,8 @@ fun AppAccountScreen(vm: GatewayViewModel) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("WorkBuddy 账号", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Text(
-                    "WorkBuddy / CodeBuddy 设备授权登录（OAuth），无需 API Key。",
+                    "WorkBuddy / CodeBuddy 设备授权登录（OAuth），无需 API Key。" +
+                        "已启用账号级串行、随机请求间隔与风控冷却。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

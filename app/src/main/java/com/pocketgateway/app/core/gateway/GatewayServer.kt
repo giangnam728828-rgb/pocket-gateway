@@ -313,6 +313,7 @@ class GatewayServer(
 
         var lastError = ""
         var lastTraeRetryMs = 0L
+        var lastWorkBuddyRetryMs = 0L
         for (channel in candidates) {
             // APP 账号直连渠道：凭证为空时直接给出明确原因，避免上游返回 302/401 让用户困惑
             if (channel.type == com.pocketgateway.app.core.model.ProviderType.APP_NATIVE &&
@@ -334,6 +335,28 @@ class GatewayServer(
 
             // APP 直连渠道：用 HTTP/1.1 直连（官方实现禁用 h2，走 h2 会被边缘 302）
             if (channel.type == com.pocketgateway.app.core.model.ProviderType.APP_NATIVE) {
+                val riskWait = WorkBuddyGuard.riskRemaining(channel)
+                if (riskWait > 0) {
+                    lastWorkBuddyRetryMs = maxOf(lastWorkBuddyRetryMs, riskWait)
+                    lastError = "WorkBuddy 账号风控冷却中（${riskWait / 1000}s 后重试）"
+                    log(
+                        cfg, model, channel, 429, false,
+                        System.currentTimeMillis() - start, lastError, wantStream,
+                    )
+                    continue
+                }
+
+                val lease = try {
+                    WorkBuddyGuard.leaseChat(channel)
+                } catch (e: Exception) {
+                    lastError = e.message ?: "WorkBuddy 账号忙"
+                    log(
+                        cfg, model, channel, 429, false,
+                        System.currentTimeMillis() - start, lastError, wantStream,
+                    )
+                    continue
+                }
+
                 try {
                     // 批次B：记录转换后的请求摘要（脱敏）与上游状态码，便于定位
                     val reqDigest = buildString {
@@ -354,20 +377,41 @@ class GatewayServer(
                     RequestThrottle.before(channel.id)
                     val (st, text) = com.pocketgateway.app.core.appaccount.WorkBuddyApi
                         .chatStream(channel, payload.body, timeout)
+
                     val ok = st in 200..299
-                    if (ok) {
+                    val creditRisk = isWorkBuddyCreditError(text)
+                    val channelRisk = st == 302 || st == 401 || st == 402 ||
+                        text.contains("11128") || creditRisk
+
+                    if (ok && !channelRisk) {
                         cooldown.clear(channel.id)
                         RequestThrottle.clearModel(channel.id, model)
-                    } else if (st == 429 || st == 403) {
-                        cooldown.penalize(channel.id, st)
+                        WorkBuddyGuard.clearRisk(channel)
+                    } else {
+                        val duration = when {
+                            st == 429 -> cooldown.penalize(channel.id, 429, 120_000L)
+                            st == 403 -> cooldown.penalize(channel.id, 403, 600_000L)
+                            st == 302 || st == 401 ->
+                                cooldown.penalize(channel.id, 302, 300_000L)
+                            st == 402 -> cooldown.penalize(channel.id, 429, 600_000L)
+                            text.contains("11128") ->
+                                cooldown.penalize(channel.id, 429, 300_000L)
+                            creditRisk -> cooldown.penalize(channel.id, 429, 600_000L)
+                            else -> 0L
+                        }
+                        if (duration > 0) {
+                            WorkBuddyGuard.markRisk(channel, duration)
+                            lastWorkBuddyRetryMs = maxOf(lastWorkBuddyRetryMs, duration)
+                        }
+                        if (text.contains("11102")) {
+                            RequestThrottle.penalizeModel(channel.id, model)
+                        }
+                        if (text.contains("11128")) {
+                            // 渠道级风控：同时冻结该模型，避免继续撞同一指纹
+                            RequestThrottle.penalizeModel(channel.id, model, 120_000L)
+                        }
                     }
-                    if (text.contains("11102")) {
-                        RequestThrottle.penalizeModel(channel.id, model)
-                    }
-                    if (text.contains("11128")) {
-                        // 渠道级风控：冷却更久，避免持续撞；不要在同次请求里换号重试
-                        cooldown.penalize(channel.id, 429, 60_000L)
-                    }
+
                     val respHead = text.take(200).replace(Regex("\\s+"), " ")
                     log(cfg, model, channel, st, ok, System.currentTimeMillis() - start,
                         "REQ[$reqDigest] RESP[$respHead]", wantStream)
@@ -397,6 +441,8 @@ class GatewayServer(
                     lastError = e.message ?: e::class.java.simpleName
                     log(cfg, model, channel, 0, false, System.currentTimeMillis() - start, lastError, wantStream)
                     continue
+                } finally {
+                    lease.release()
                 }
             }
 
@@ -712,13 +758,14 @@ class GatewayServer(
                 log(cfg, model, channel, 0, false, System.currentTimeMillis() - start, lastError, wantStream)
             }
         }
-        if (lastTraeRetryMs > 0) {
-            val seconds = ((lastTraeRetryMs + 999L) / 1000L).coerceAtLeast(1L)
+        val riskWaitMs = maxOf(lastTraeRetryMs, lastWorkBuddyRetryMs)
+        if (riskWaitMs > 0) {
+            val seconds = ((riskWaitMs + 999L) / 1000L).coerceAtLeast(1L)
             response.header("Retry-After", seconds.toString())
             return respondError(
                 HttpStatusCode.TooManyRequests,
-                "trae_rate_limited",
-                "TRAE 账号风控冷却中，请 ${seconds}s 后重试（已停止继续请求以保护账号）",
+                "account_risk_limited",
+                "上游账号风控冷却中，请 ${seconds}s 后重试（已停止继续请求以保护账号）",
             )
         }
         respondError(HttpStatusCode.BadGateway, "upstream_error", "All channels failed. Last error: $lastError")
@@ -895,4 +942,14 @@ class GatewayServer(
     }
 
     private fun truncate(s: String, max: Int) = if (s.length <= max) s else s.take(max) + "…"
+
+    /** WorkBuddy 积分/额度不足类错误：应长冷却，而不是继续消耗尝试次数。 */
+    private fun isWorkBuddyCreditError(text: String): Boolean {
+        val t = text.lowercase()
+        return t.contains("积分不足") || t.contains("余额不足") ||
+            t.contains("额度不足") || t.contains("额度已用完") ||
+            t.contains("额度耗尽") || t.contains("quota exceeded") ||
+            t.contains("insufficient quota") || t.contains("insufficient_quota") ||
+            t.contains("credits exhausted")
+    }
 }

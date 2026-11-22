@@ -39,8 +39,8 @@ android {
         applicationId = "com.pocketgateway.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 35
-        versionName = "0.21.13"
+        versionCode = 36
+        versionName = "0.21.14"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
