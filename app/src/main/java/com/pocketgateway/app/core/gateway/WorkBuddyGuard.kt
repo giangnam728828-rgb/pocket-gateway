@@ -33,9 +33,9 @@ object WorkBuddyGuard {
     private const val WARMUP_JITTER_MS = 3_000L
     private const val WARMUP_REQUESTS = 5
     private const val ACQUIRE_TIMEOUT_MS = 90_000L
-    private const val DAILY_LIMIT = 200
-    private const val HOURLY_LIMIT = 60
-    private const val GLOBAL_CONCURRENCY = 2
+    private const val DAILY_LIMIT = 1500
+    private const val HOURLY_LIMIT = 300
+    private const val GLOBAL_CONCURRENCY = 10
 
     private val stateMutex = Mutex()
     private val chatLocks = ConcurrentHashMap<String, Mutex>()

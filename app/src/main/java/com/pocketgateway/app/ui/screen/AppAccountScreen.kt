@@ -143,7 +143,7 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                 Text("WorkBuddy 账号", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Text(
                     "WorkBuddy / CodeBuddy 设备授权登录（OAuth），无需 API Key。" +
-                        "已启用账号级串行、随机间隔、每日/每小时上限与持久化风控冷却。",
+                        "已启用单账号串行、平台总并发 10、每日 1500 / 每小时 300 上限与持久化风控冷却。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -301,7 +301,7 @@ fun AppAccountScreen(vm: GatewayViewModel) {
                 Text(
                     "TRAE 不提供 API Key，只能用网页 OAuth 登录。点「登录 TRAE」打开授权页，" +
                         "授权完成后回到这里点「完成登录」；UserJWT 过期会自动用 RefreshToken 续期。" +
-                        "已启用账号级串行、随机间隔、每日/每小时上限与关机后仍保留的风控冷却。",
+                        "已启用单账号串行、平台总并发 10、每日 1500 / 每小时 300 上限与持久化风控冷却。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

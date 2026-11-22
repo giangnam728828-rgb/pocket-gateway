@@ -38,9 +38,9 @@ object TraeGuard {
     private const val BG_JITTER_MS = 800L
     private const val ACQUIRE_TIMEOUT_MS = 90_000L
     private const val REFRESH_FAIL_COOLDOWN_MS = 10 * 60_000L
-    private const val DAILY_LIMIT = 300
-    private const val HOURLY_LIMIT = 60
-    private const val GLOBAL_CONCURRENCY = 2
+    private const val DAILY_LIMIT = 1500
+    private const val HOURLY_LIMIT = 300
+    private const val GLOBAL_CONCURRENCY = 10
 
     private val stateMutex = Mutex()
     private val chatLocks = ConcurrentHashMap<String, Mutex>()
